@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Geoportal - Cámaras Pluviales</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="map"></div>
+    
+    <!-- Botón flotante para abrir panel de control -->
+    <button class="panel-toggle-btn visible" id="panelToggleBtn" onclick="togglePanel('controlPanel')" aria-label="Abrir panel de control">
+        ⚙️
+    </button>
+    
+    <!-- Panel de control -->
+    <div class="control-panel hidden" id="controlPanel">
+        <button class="panel-close" onclick="togglePanel('controlPanel')" aria-label="Cerrar panel">
+            ✕
+        </button>
+        <h3>
+            <span>🗺️</span>
+            <span>Geoportal Cámaras</span>
+        </h3>
+        
+        <p style="font-size:13px;color:#555;margin:8px 0;">📦 Datos cargados desde GeoPackage local (<code>datos.geojson</code>): cámaras, sumideros y tuberías.</p>
+
+        <button class="btn-primary" onclick="cargarCapa()">
+            <span>🔍</span>
+            <span>Cargar Capa</span>
+        </button>
+        
+        <button class="btn-secondary" onclick="limpiarCapa()" style="display: none;" id="btnLimpiar">
+            🗑️ Limpiar Capa
+        </button>
+        
+        <!-- Botón de ubicación -->
+        <button class="btn-location" onclick="obtenerUbicacion()" id="btnUbicacion">
+            📍 Mi Ubicación
+        </button>
+        
+        <div id="status"></div>
+        
+        <!-- Panel de información de ubicación -->
+        <div class="location-info" id="locationInfo" style="display: none;">
+            <strong>📍 Tu ubicación:</strong><br>
+            <span id="coordenadas">-</span>
+        </div>
+        
+        <div class="info-panel" id="infoPanel" style="display: none;">
+            <strong>Puntos cargados:</strong> <span id="totalPuntos">0</span><br>
+            <strong>Última actualización:</strong> <span id="ultimaActualizacion">-</span>
+        </div>
+    </div>
+
+    <!-- Botón flotante para abrir panel de rutas -->
+    <button class="route-toggle-btn visible" id="routeToggleBtn" onclick="togglePanel('routePanel')" aria-label="Abrir panel de rutas">
+        🗺️
+    </button>
+
+    <!-- Panel de rutas -->
+    <div class="route-panel hidden" id="routePanel">
+        <button class="panel-close" onclick="togglePanel('routePanel')" aria-label="Cerrar panel de rutas">
+            ✕
+        </button>
+        <h3>
+            <span>🚗</span>
+            <span>Calcular Ruta</span>
+        </h3>
+
+        <div class="route-mode-selector">
+            <label>Modo de transporte:</label>
+            <select id="routeProfile" class="route-select">
+                <option value="driving-car">🚗 Auto</option>
+                <option value="cycling-regular">🚴 Bicicleta</option>
+                <option value="foot-walking">🚶 A pie</option>
+            </select>
+        </div>
+
+        <div class="input-group">
+            <label>📍 Desde (Origen)</label>
+            <div class="coordinate-input-group">
+                <input type="text" id="origenLat" placeholder="Latitud" class="coord-input">
+                <input type="text" id="origenLon" placeholder="Longitud" class="coord-input">
+            </div>
+            <button class="btn-small" onclick="usarUbicacionActual('origen')">
+                📍 Usar mi ubicación
+            </button>
+            <button class="btn-small" onclick="seleccionarEnMapa('origen')">
+                🎯 Seleccionar en mapa
+            </button>
+        </div>
+
+        <div class="input-group">
+            <label>🏁 Hacia (Destino)</label>
+            <div class="coordinate-input-group">
+                <input type="text" id="destinoLat" placeholder="Latitud" class="coord-input">
+                <input type="text" id="destinoLon" placeholder="Longitud" class="coord-input">
+            </div>
+            <button class="btn-small" onclick="seleccionarEnMapa('destino')">
+                🎯 Seleccionar en mapa
+            </button>
+        </div>
+
+        <button class="btn-primary" onclick="calcularRuta()">
+            <span>🗺️</span>
+            <span>Calcular Ruta</span>
+        </button>
+
+        <button class="btn-secondary" onclick="limpiarRuta()" style="display: none;" id="btnLimpiarRuta">
+            🗑️ Limpiar Ruta
+        </button>
+
+        <div id="routeStatus"></div>
+
+        <!-- Panel de información de rutas múltiples -->
+        <div class="route-info" id="routeInfo" style="display: none;">
+            <!-- Se llenará dinámicamente con la información de las rutas -->
+        </div>
+    </div>
+
+    <!-- Botón flotante para abrir créditos -->
+    <button class="credits-toggle-btn visible" id="creditsToggleBtn" onclick="togglePanel('creditsPanel')" aria-label="Abrir créditos">
+        👥
+    </button>
+
+    <!-- Panel de créditos -->
+    <div class="credits hidden" id="creditsPanel">
+        <button class="panel-close" onclick="togglePanel('creditsPanel')" aria-label="Cerrar créditos">
+            ✕
+        </button>
+        <div class="credits-title">👨‍💻 Desarrollado por:</div>
+        <div class="credits-names">
+            <div>Geogr. John Leonardo Cabrera Espíndola</div>
+            <div>Geogr. Luis Freddy Quenta Alegría</div>
+        </div>
+        <div class="credits-location">
+            📍 La Paz, Bolivia
+        </div>
+    </div>
+
+    <!-- Botón flotante para abrir leyenda -->
+    <button class="legend-toggle-btn visible" id="legendToggleBtn" onclick="togglePanel('legendPanel')" aria-label="Abrir leyenda">
+        📋
+    </button>
+
+    <!-- Panel de leyenda -->
+    <div class="legend hidden" id="legendPanel">
+        <button class="panel-close" onclick="togglePanel('legendPanel')" aria-label="Cerrar leyenda">
+            ✕
+        </button>
+        <h4>📋 Accesibilidad</h4>
+        <div class="legend-item">
+            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
+                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#28a745" stroke-width="2"/>
+                <g transform="translate(16, 16)">
+                    <rect x="-6" y="-3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
+                    <rect x="1.5" y="-3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
+                    <rect x="-6" y="0" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
+                    <rect x="1.5" y="0" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
+                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
+                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
+                </g>
+            </svg>
+            <span>Accesible Operativo</span>
+        </div>
+        <div class="legend-item">
+            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
+                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#ffc107" stroke-width="2"/>
+                <g transform="translate(16, 16)">
+                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
+                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
+                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
+                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
+                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
+                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
+                </g>
+            </svg>
+            <span>Accesible con Dificultad</span>
+        </div>
+        <div class="legend-item">
+            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
+                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#6c757d" stroke-width="2"/>
+                <g transform="translate(16, 16)">
+                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
+                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
+                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
+                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
+                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
+                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
+                </g>
+            </svg>
+            <span>Inferido</span>
+        </div>
+        <div class="legend-item">
+            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
+                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#dc3545" stroke-width="2"/>
+                <g transform="translate(16, 16)">
+                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
+                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
+                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
+                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
+                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
+                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
+                </g>
+            </svg>
+            <span>No Accesible</span>
+        </div>
+        <div class="legend-item">
+            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
+                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#17a2b8" stroke-width="2"/>
+                <g transform="translate(16, 16)">
+                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
+                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
+                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
+                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
+                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
+                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
+                </g>
+            </svg>
+            <span>Otro estado</span>
+        </div>
+        <h4 style="margin-top:12px;">🟦 Otras capas</h4>
+        <div class="legend-item">
+            <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="3" width="22" height="22" rx="3" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
+                <rect x="6" y="6" width="16" height="16" rx="2" fill="none" stroke="#0077b6" stroke-width="2"/>
+                <line x1="10" y1="7" x2="10" y2="21" stroke="#0077b6" stroke-width="1.6"/>
+                <line x1="14" y1="7" x2="14" y2="21" stroke="#0077b6" stroke-width="1.6"/>
+                <line x1="18" y1="7" x2="18" y2="21" stroke="#0077b6" stroke-width="1.6"/>
+            </svg>
+            <span>Sumidero</span>
+        </div>
+        <div class="legend-item">
+            <svg width="32" height="20" viewBox="0 0 32 20" xmlns="http://www.w3.org/2000/svg">
+                <line x1="2" y1="10" x2="30" y2="10" stroke="#1f78b4" stroke-width="3"/>
+            </svg>
+            <span>Tubería cámaras</span>
+        </div>
+        <div class="legend-item">
+            <svg width="32" height="20" viewBox="0 0 32 20" xmlns="http://www.w3.org/2000/svg">
+                <line x1="2" y1="10" x2="30" y2="10" stroke="#7fd4f5" stroke-width="3"/>
+            </svg>
+            <span>Tubería sumideros</span>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
