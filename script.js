@@ -182,8 +182,8 @@ function initMap() {
         maxNativeZoom: 19
     });
     
-    // Añadir capa base por defecto
-    osmLayer.addTo(map);
+    // Añadir capa base por defecto (modo oscuro)
+    darkLayer.addTo(map);
     
     // Control de capas
     const baseLayers = {
