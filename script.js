@@ -293,20 +293,41 @@ function createSumideroIcon() {
     });
 }
 
-// Cargar capas directamente desde el GeoJSON generado de los GeoPackage
+// Leer las capas desde Supabase (función geoportal_capas) o, si no hay
+// configuración o falla la conexión, desde datos.geojson
+async function obtenerGeojson() {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    if (cfg.supabaseUrl && cfg.supabaseAnonKey) {
+        try {
+            const headers = { apikey: cfg.supabaseAnonKey, 'Content-Type': 'application/json' };
+            // Las claves anon antiguas son JWT y también van en Authorization
+            if (cfg.supabaseAnonKey.startsWith('eyJ')) headers.Authorization = `Bearer ${cfg.supabaseAnonKey}`;
+            const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_capas`, {
+                method: 'POST',
+                headers,
+                body: '{}'
+            });
+            if (response.ok) return await response.json();
+            console.warn('Supabase respondió', response.status, '— se usa datos.geojson');
+        } catch (error) {
+            console.warn('No se pudo leer Supabase — se usa datos.geojson:', error);
+        }
+    }
+    const response = await fetch('datos.geojson');
+    if (!response.ok) throw new Error('No se pudo leer datos.geojson');
+    return response.json();
+}
+
+// Cargar las capas del sistema de drenaje
 async function cargarCapa() {
     mostrarEstado('Cargando datos...', 'info');
 
     try {
-        const response = await fetch('datos.geojson');
-
-        if (!response.ok) throw new Error('No se pudo leer datos.geojson');
-
-        const geojson = await response.json();
+        const geojson = await obtenerGeojson();
         const data = geojson.features || [];
 
         if (data.length === 0) {
-            mostrarEstado('No se encontraron datos en datos.geojson', 'error');
+            mostrarEstado('No se encontraron datos para mostrar', 'error');
             return;
         }
 
