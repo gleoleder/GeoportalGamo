@@ -1801,6 +1801,20 @@ function pdfTexto(t) {
     return String(t ?? '').replace(/→/g, '->').replace(/[^\x00-\xFF]/g, '');
 }
 
+// jsPDF se descarga solo la primera vez que se pide una ficha
+let promesaJsPDF = null;
+function cargarJsPDF() {
+    if (window.jspdf) return Promise.resolve();
+    promesaJsPDF ||= new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+        s.onload = resolve;
+        s.onerror = () => { promesaJsPDF = null; reject(new Error('No se pudo cargar jsPDF')); };
+        document.head.appendChild(s);
+    });
+    return promesaJsPDF;
+}
+
 async function generarFichaPDF(reg) {
     const carga = document.createElement('div');
     carga.className = 'carga';
@@ -1809,6 +1823,7 @@ async function generarFichaPDF(reg) {
     document.body.appendChild(carga);
 
     try {
+        await cargarJsPDF();
         const { jsPDF } = window.jspdf;
         const doc = new jsPDF('p', 'mm', 'letter');
         const W = doc.internal.pageSize.getWidth();
