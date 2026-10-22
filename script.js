@@ -43,6 +43,19 @@ const ACCESIBILIDAD = [
     ['NO ACCESIBLE', 'No accesible', '#a8423a'],
     ['INFERIDO', 'Inferida', '#7f8b97']
 ];
+// Rangos de pendiente (%): [mínimo incluido, máximo excluido, rótulo, color]
+const PENDIENTE = [
+    [-Infinity, 0.5, 'Menor a 0,5 %', '#a8423a'],
+    [0.5, 2, '0,5 – 2 %', '#d29b3d'],
+    [2, 5, '2 – 5 %', '#6fa6cf'],
+    [5, 10, '5 – 10 %', '#2f6f9f'],
+    [10, Infinity, '10 % o más', '#173f5f']
+];
+
+function rangoDe(rangos, v) {
+    if (v === null || v === undefined || v === '' || isNaN(v)) return null;
+    return rangos.find(([min, max]) => Number(v) >= min && Number(v) < max) || null;
+}
 
 const TEMAS = {
     camaras: {
@@ -61,14 +74,22 @@ const TEMAS = {
     progresivas: {
         estado_estructural: { titulo: 'Estado estructural', clases: ESTADO },
         nivel_certeza: { titulo: 'Nivel de certeza', clases: CERTEZA }
+    },
+    tuberias_camaras: {
+        pendiente_pct: { titulo: 'Pendiente', rangos: PENDIENTE },
+        unico: { titulo: 'Color único', unico: true }
+    },
+    tuberias_sumideros: {
+        pendiente_pct: { titulo: 'Pendiente', rangos: PENDIENTE },
+        unico: { titulo: 'Color único', unico: true }
     }
 };
 
 const CAPAS = {
     camaras: { nombre: 'Cámaras de inspección', grupo: 'Red de drenaje', tipo: 'punto', tema: 'accesibilidad', pane: 'pCamaras' },
     sumideros: { nombre: 'Sumideros', grupo: 'Red de drenaje', tipo: 'punto', tema: 'condicion', pane: 'pSumideros' },
-    tuberias_camaras: { nombre: 'Tuberías de cámaras', grupo: 'Red de drenaje', tipo: 'linea', pane: 'pTuberias', color: '#24577a' },
-    tuberias_sumideros: { nombre: 'Tuberías de sumideros', grupo: 'Red de drenaje', tipo: 'linea', pane: 'pTuberias', color: '#5c9bc8' },
+    tuberias_camaras: { nombre: 'Tuberías de cámaras', grupo: 'Red de drenaje', tipo: 'linea', tema: 'pendiente_pct', pane: 'pTuberias', color: '#24577a', zoomEtiquetas: 17 },
+    tuberias_sumideros: { nombre: 'Tuberías de sumideros', grupo: 'Red de drenaje', tipo: 'linea', tema: 'pendiente_pct', pane: 'pTuberias', color: '#5c9bc8', zoomEtiquetas: 19 },
     canales: { nombre: 'Ejes de canales', grupo: 'Canales', tipo: 'linea', pane: 'pCanales', color: '#127369' },
     progresivas: { nombre: 'Secciones levantadas', grupo: 'Canales', tipo: 'punto', tema: 'estado_estructural', pane: 'pProgresivas', zoomMin: 16 },
     area: { nombre: 'Área de estudio', grupo: 'Referencia', tipo: 'poligono', pane: 'pArea', color: '#13283b' }
@@ -79,6 +100,8 @@ const ORDEN_PANEL = ['camaras', 'sumideros', 'tuberias_camaras', 'tuberias_sumid
 const registro = {};
 const grupos = {};
 const visibles = {};
+const etiquetas = {};
+let etiquetasActivas = true;
 
 // ---------------------------------------------------------------------
 // Utilidades de formato
@@ -169,9 +192,14 @@ function conCanales(texto) {
 }
 
 function colorTema(capa, props, tema) {
-    const def = TEMAS[capa]?.[tema || CAPAS[capa].tema];
-    if (!def) return CAPAS[capa].color || SIN_DATO;
-    const c = def.clases.find(([valor]) => valor === props[tema || CAPAS[capa].tema]);
+    const campo = tema || CAPAS[capa].tema;
+    const def = TEMAS[capa]?.[campo];
+    if (!def || def.unico) return CAPAS[capa].color || SIN_DATO;
+    if (def.rangos) {
+        const r = rangoDe(def.rangos, props[campo]);
+        return r ? r[3] : SIN_DATO;
+    }
+    const c = def.clases.find(([valor]) => valor === props[campo]);
     return c ? c[2] : SIN_DATO;
 }
 
@@ -337,11 +365,12 @@ function initMap() {
     map = L.map('map', { maxZoom: 22, zoomSnap: 0.25, zoomControl: false }).setView([-17.9647, -67.1064], 15);
 
     // Orden de dibujo: área, canales, tuberías, flujo, secciones, sumideros, cámaras
-    [['pArea', 380], ['pCanales', 400], ['pTuberias', 410], ['pFlujo', 415],
+    [['pArea', 380], ['pCanales', 400], ['pTuberias', 410], ['pFlujo', 415], ['pEtiquetas', 612],
      ['pProgresivas', 620], ['pSumideros', 630], ['pCamaras', 640]].forEach(([n, z]) => {
         map.createPane(n).style.zIndex = z;
     });
     map.getPane('pFlujo').style.pointerEvents = 'none';
+    map.getPane('pEtiquetas').style.pointerEvents = 'none';
 
     L.control.zoom({ position: 'topright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
     agregarControles();
@@ -410,6 +439,7 @@ function actualizarZoom() {
     el.classList.toggle('z-muy-lejos', z < 15);
     el.classList.toggle('z-lejos', z >= 15 && z < 16);
     el.classList.toggle('z-medio', z >= 16 && z < 18);
+    actualizarEtiquetas();
     // Las secciones de canal solo se muestran de cerca
     if (grupos.progresivas) {
         const debe = visibles.progresivas && z >= CAPAS.progresivas.zoomMin;
@@ -528,12 +558,14 @@ function construirCapa(capa) {
             layer = L.geoJSON(reg.geometry, {
                 pane: def.pane,
                 style: {
-                    color: def.color,
-                    weight: capa === 'tuberias_camaras' ? grosorTuberia(p) : 2.2,
+                    color: colorTema(capa, p),
+                    weight: capa === 'tuberias_camaras' ? grosorTuberia(p) : 2.4,
                     opacity: 0.95,
                     dashArray: esInferida(p) ? '7 5' : null
                 }
             });
+            reg.etiqueta = crearEtiquetaPendiente(reg);
+            if (reg.etiqueta) (etiquetas[capa] ||= L.layerGroup()).addLayer(reg.etiqueta);
             const flujo = L.geoJSON(reg.geometry, {
                 pane: 'pFlujo',
                 interactive: false,
@@ -545,7 +577,9 @@ function construirCapa(capa) {
         if (capa !== 'area') {
             layer.bindPopup(() => htmlFicha(reg), { className: 'ficha', maxWidth: 400, minWidth: 280, autoPanPadding: [40, 40] });
             if (def.tipo === 'linea') {
-                layer.bindTooltip(capa === 'canales' ? nombreCanal(p.nombre) : p.codigo, { sticky: true, className: 'etiqueta-mapa', direction: 'top' });
+                const texto = capa === 'canales' ? nombreCanal(p.nombre)
+                    : `${p.codigo}${p.pendiente_pct != null ? ` · pendiente ${numero(p.pendiente_pct, 2)} %` : ''}`;
+                layer.bindTooltip(texto, { sticky: true, className: 'etiqueta-mapa', direction: 'top' });
             }
         }
         reg.layer = layer;
@@ -553,7 +587,54 @@ function construirCapa(capa) {
     });
 
     if (capa !== 'progresivas') grupo.addTo(map);
-    if (capa === 'tuberias_camaras' || capa === 'tuberias_sumideros') actualizarFlujo();
+    if (capa === 'tuberias_camaras' || capa === 'tuberias_sumideros') {
+        actualizarFlujo();
+        actualizarEtiquetas();
+    }
+}
+
+// Etiqueta con la pendiente (%) en el punto medio del tramo, orientada
+// según la tubería; la flecha indica el sentido del flujo (origen → destino).
+function crearEtiquetaPendiente(reg) {
+    const v = reg.props.pendiente_pct;
+    if (v === null || v === undefined) return null;
+    const coords = reg.geometry.type === 'MultiLineString' ? reg.geometry.coordinates.flat() : reg.geometry.coordinates;
+    if (coords.length < 2) return null;
+    const pts = coords.map(([lon, lat]) => map.project(L.latLng(lat, lon), 18));
+    const largos = pts.slice(1).map((pt, i) => pt.distanceTo(pts[i]));
+    const total = largos.reduce((s, d) => s + d, 0);
+    if (!total) return null;
+    let i = 0, acumulado = 0;
+    while (i < largos.length - 1 && acumulado + largos[i] < total / 2) acumulado += largos[i++];
+    const a = pts[i], b = pts[i + 1];
+    const t = (total / 2 - acumulado) / largos[i];
+    const medio = map.unproject(L.point(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t), 18);
+    let angulo = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+    const invertida = angulo > 90 || angulo < -90;
+    if (invertida) angulo += 180;
+    const texto = `${numero(v, 1)} %`;
+    return L.marker(medio, {
+        pane: 'pEtiquetas',
+        interactive: false,
+        keyboard: false,
+        icon: L.divIcon({
+            className: 'etiqueta-pendiente',
+            iconSize: [0, 0],
+            html: `<span style="transform:translate(-50%,-50%) rotate(${angulo.toFixed(1)}deg)">${invertida ? `← ${texto}` : `${texto} →`}</span>`
+        })
+    });
+}
+
+function actualizarEtiquetas() {
+    if (!map) return;
+    const z = map.getZoom();
+    ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
+        const g = etiquetas[capa];
+        if (!g) return;
+        const mostrar = etiquetasActivas && visibles[capa] && z >= CAPAS[capa].zoomEtiquetas;
+        if (mostrar && !map.hasLayer(g)) g.addTo(map);
+        if (!mostrar && map.hasLayer(g)) map.removeLayer(g);
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -569,6 +650,8 @@ function construirPanelCapas() {
             <h2 class="grupo__titulo">${esc(grupo)}</h2>
             ${capas.map(htmlCapa).join('')}
             ${grupo === 'Red de drenaje' ? `
+                <label class="interruptor"><input type="checkbox" id="chkPendientes" ${etiquetasActivas ? 'checked' : ''}>
+                Mostrar la pendiente (%) sobre las tuberías</label>
                 <label class="interruptor"><input type="checkbox" id="chkFlujo" ${flujoActivo ? 'checked' : ''}>
                 Animar el sentido del flujo en las tuberías</label>` : ''}
         </div>`).join('');
@@ -582,6 +665,13 @@ function construirPanelCapas() {
     document.getElementById('chkFlujo').addEventListener('change', e => {
         flujoActivo = e.target.checked;
         actualizarFlujo();
+    });
+    document.getElementById('chkPendientes').addEventListener('change', e => {
+        etiquetasActivas = e.target.checked;
+        actualizarEtiquetas();
+        if (etiquetasActivas && map.getZoom() < CAPAS.tuberias_camaras.zoomEtiquetas) {
+            aviso('Acérquese para ver la pendiente sobre las tuberías (zoom 17 o mayor).');
+        }
     });
 
     document.getElementById('mapasBase').innerHTML = Object.entries(MAPAS_BASE).map(([clave, b]) =>
@@ -621,6 +711,26 @@ function htmlCapa(capa) {
 function htmlLeyenda(capa) {
     const def = CAPAS[capa];
     const regs = registro[capa];
+    if (capa === 'tuberias_camaras' || capa === 'tuberias_sumideros') {
+        const tema = TEMAS[capa][def.tema];
+        const filas = [];
+        if (tema.rangos) {
+            tema.rangos.forEach(([, , rotulo, color]) => {
+                const n = regs.filter(r => rangoDe(tema.rangos, r.props.pendiente_pct)?.[2] === rotulo).length;
+                if (n) filas.push(`<li><span class="muestra">${svgLinea(color, 3)}</span><span class="texto">${esc(rotulo)}</span><span class="n">${n}</span></li>`);
+            });
+            const sin = regs.filter(r => !rangoDe(tema.rangos, r.props.pendiente_pct)).length;
+            if (sin) filas.push(`<li><span class="muestra">${svgLinea(SIN_DATO, 3)}</span><span class="texto">Sin pendiente registrada</span><span class="n">${sin}</span></li>`);
+        }
+        const firme = regs.filter(r => !esInferida(r.props)).length;
+        const gris = tema.rangos ? '#7a8897' : def.color;
+        filas.push(
+            `<li><span class="muestra">${svgLinea(gris, 3)}</span><span class="texto">Trazado confirmado o probable</span><span class="n">${firme}</span></li>`,
+            `<li><span class="muestra">${svgLinea(gris, 3, true)}</span><span class="texto">Trazado inferido o no determinado</span><span class="n">${regs.length - firme}</span></li>`);
+        if (capa === 'tuberias_camaras') filas.push('<li class="nota">El grosor es proporcional al diámetro.</li>');
+        filas.push(`<li class="nota">Pendiente registrada en la base del relevamiento. Las etiquetas (%) aparecen desde el zoom ${def.zoomEtiquetas}; la flecha indica el sentido del flujo.</li>`);
+        return filas.join('');
+    }
     if (TEMAS[capa]) {
         const tema = TEMAS[capa][def.tema];
         const campo = def.tema;
@@ -632,14 +742,6 @@ function htmlLeyenda(capa) {
         if (sin) filas.push(`<li><span class="muestra">${simboloCapa(capa, SIN_DATO)}</span><span class="texto">Sin dato</span><span class="n">${sin}</span></li>`);
         if (def.zoomMin) filas.push(`<li class="nota">Visibles desde el zoom ${def.zoomMin}; acérquese para verlas.</li>`);
         return filas.join('');
-    }
-    if (capa === 'tuberias_camaras' || capa === 'tuberias_sumideros') {
-        const firme = regs.filter(r => !esInferida(r.props)).length;
-        const inf = regs.length - firme;
-        return `
-            <li><span class="muestra">${svgLinea(def.color, 3)}</span><span class="texto">Trazado confirmado o probable</span><span class="n">${firme}</span></li>
-            <li><span class="muestra">${svgLinea(def.color, 3, true)}</span><span class="texto">Trazado inferido o no determinado</span><span class="n">${inf}</span></li>
-            ${capa === 'tuberias_camaras' ? '<li class="nota">El grosor es proporcional al diámetro.</li>' : ''}`;
     }
     if (capa === 'canales') {
         const km = regs.reduce((s, r) => s + (Number(r.props.longitud_eje_m) || 0), 0) / 1000;
@@ -661,11 +763,16 @@ function alternarCapa(capa, activa) {
         map.removeLayer(grupos[capa]);
     }
     actualizarFlujo();
+    actualizarEtiquetas();
 }
 
 function cambiarTema(capa, campo) {
     CAPAS[capa].tema = campo;
-    registro[capa].forEach(reg => reg.layer.setIcon(icono(capa, colorTema(capa, reg.props))));
+    registro[capa].forEach(reg => {
+        const color = colorTema(capa, reg.props);
+        if (CAPAS[capa].tipo === 'punto') reg.layer.setIcon(icono(capa, color));
+        else reg.layer.setStyle({ color });
+    });
     document.getElementById(`leyenda-${capa}`).innerHTML = htmlLeyenda(capa);
 }
 
@@ -788,6 +895,11 @@ const FICHAS = {
         tipo: 'Tubería de cámara',
         subtitulo: p => `${p.origen || '¿?'} → ${conCanales(p.destino) || '¿?'}`,
         secciones: [
+            ['Pendiente', [
+                ['pendiente_pct', 'Pendiente registrada', 'pendiente'],
+                ['longitud_m', 'Longitud del tramo', 'num:2:m'],
+                ['distancia_campo_m', 'Distancia registrada en campo', 'num:2:m'],
+                ['pendiente_pct', 'Desnivel según la pendiente', 'desnivel']]],
             ['Conexión', [
                 ['origen', 'Origen', 'mono'],
                 ['destino', 'Destino', 'canal'],
@@ -802,15 +914,13 @@ const FICHAS = {
                 ['profundidad_m', 'Profundidad', 'num:2:m'],
                 ['estado', 'Estado', 'estado:ESTADO'],
                 ['codigo_campo', 'Código registrado en campo', 'mono']]],
-            ['Geometría y relieve', [
-                ['longitud_m', 'Longitud', 'num:2:m'],
-                ['distancia_campo_m', 'Distancia registrada en campo', 'num:2:m'],
-                ['elevacion_inicio_m', 'Elevación inicial (MDS)', 'num:2:m'],
-                ['elevacion_fin_m', 'Elevación final (MDS)', 'num:2:m'],
+            ['Superficie del terreno (MDS)', [
+                ['elevacion_inicio_m', 'Elevación en el inicio', 'num:2:m'],
+                ['elevacion_fin_m', 'Elevación en el final', 'num:2:m'],
                 ['pendiente_superficial_pct', 'Pendiente de la superficie', 'num:2:%']]]
         ],
         texto: [['observaciones', 'Observaciones de campo']],
-        nota: 'La pendiente corresponde a la superficie según el MDS; no es la pendiente hidráulica de la tubería.'
+        nota: 'La pendiente registrada proviene de la base del relevamiento. La pendiente de la superficie se calculó con el MDS entre los extremos del tramo; es una referencia del terreno y no la pendiente hidráulica de la tubería.'
     },
     tuberias_sumideros: null,
     canales: {
@@ -881,7 +991,13 @@ const FICHAS = {
         texto: [['observaciones', 'Observaciones de campo']]
     }
 };
-FICHAS.tuberias_sumideros = { ...FICHAS.tuberias_camaras, tipo: 'Tubería de sumidero' };
+// Las tuberías de sumidero son tramos cortos: no se informa la superficie del MDS
+FICHAS.tuberias_sumideros = {
+    ...FICHAS.tuberias_camaras,
+    tipo: 'Tubería de sumidero',
+    secciones: FICHAS.tuberias_camaras.secciones.filter(([titulo]) => !titulo.startsWith('Superficie')),
+    nota: 'La pendiente registrada proviene de la base del relevamiento.'
+};
 
 const PALETAS = { ESTADO, CONDICION, CERTEZA, ACCESIBILIDAD };
 
@@ -906,6 +1022,12 @@ function valorCampo(props, [campo, , formato]) {
         return n === null ? null : { texto: unidad ? `${n} ${unidad}` : n };
     }
     switch (formato) {
+        case 'pendiente': {
+            const r = rangoDe(PENDIENTE, v);
+            return { texto: `${numero(v, 2)} %`, color: r ? r[3] : SIN_DATO };
+        }
+        case 'desnivel':
+            return props.longitud_m ? { texto: `${numero(v * props.longitud_m / 100, 2)} m` } : null;
         case 'mono': return { texto: String(v), mono: true };
         case 'sino': return { texto: siNo(v) };
         case 'fecha': return { texto: fecha(v) };
@@ -951,6 +1073,10 @@ function htmlFicha(reg) {
     if (p.sector) chips.push(p.sector === 'OTRA' ? 'Otra codificación' : `Sector ${p.sector}`);
     if (p.nivel_certeza) chips.push(`<i style="background:${colorDe(CERTEZA, p.nivel_certeza)}"></i>${etiqueta(p.nivel_certeza)}`);
     if (reg.capa === 'progresivas' && p.cod_canal) chips.push(p.cod_canal);
+    if (p.pendiente_pct !== undefined && p.pendiente_pct !== null && reg.capa.startsWith('tuberias')) {
+        const r = rangoDe(PENDIENTE, p.pendiente_pct);
+        chips.unshift(`<i style="background:${r ? r[3] : SIN_DATO}"></i>Pendiente ${numero(p.pendiente_pct, 2)} %`);
+    }
 
     const foto = def.foto ? def.foto(p) : null;
     const urls = foto ? urlsFotoDrive(foto) : [];
@@ -1150,6 +1276,26 @@ function construirResumen() {
             </div>`;
     };
 
+    const htmlPendiente = (titulo, capa) => {
+        const regs = registro[capa] || [];
+        const valores = regs.map(r => r.props.pendiente_pct).filter(v => v !== null && v !== undefined).sort((a, b) => a - b);
+        if (!valores.length) return '';
+        const mediana = valores.length % 2 ? valores[(valores.length - 1) / 2]
+            : (valores[valores.length / 2 - 1] + valores[valores.length / 2]) / 2;
+        const conteo = PENDIENTE.map(([, , r, c]) => [r, c, regs.filter(x => rangoDe(PENDIENTE, x.props.pendiente_pct)?.[2] === r).length]).filter(x => x[2]);
+        const sin = regs.length - valores.length;
+        if (sin) conteo.push(['Sin pendiente registrada', SIN_DATO, sin]);
+        return `
+            <div class="distribucion">
+                <h3>${esc(titulo)}</h3>
+                <div class="barra-dist" role="img" aria-label="${esc(titulo)}">
+                    ${conteo.map(([, c, v]) => `<span style="width:${(100 * v / regs.length).toFixed(2)}%;background:${c}"></span>`).join('')}
+                </div>
+                <ul>${conteo.map(([r, c, v]) => `<li><i style="background:${c}"></i>${esc(r)}<span class="n">${v} · ${numero(100 * v / regs.length, 1)} %</span></li>`).join('')}</ul>
+                <p class="ayuda" style="margin:6px 0 0">Mediana: ${numero(mediana, 2)} % · rango ${numero(valores[0], 2)} – ${numero(valores[valores.length - 1], 2)} %</p>
+            </div>`;
+    };
+
     const certeza = resumenDatos?.certeza;
     const htmlCerteza = certeza ? `
         <div class="distribucion">
@@ -1166,6 +1312,8 @@ function construirResumen() {
     document.getElementById('resumen').innerHTML = `
         <div class="cifras">${cifras.map(([v, r]) => `<div class="cifra"><span class="valor">${v}</span><span class="rotulo">${esc(r)}</span></div>`).join('')}</div>
         ${barras.map(b => htmlBarra(...b)).join('')}
+        ${htmlPendiente('Tuberías de cámaras por pendiente', 'tuberias_camaras')}
+        ${htmlPendiente('Tuberías de sumideros por pendiente', 'tuberias_sumideros')}
         ${htmlCerteza}
         ${totalInc ? `<p class="pie-dato">Control de calidad: ${inc.CORRECCION || 0} correcciones con reglas documentadas, ${inc.ADVERTENCIA || 0} advertencias y ${inc.ERROR || 0} errores pendientes de verificación.</p>` : ''}
         <p class="pie-dato">${meta.procesado ? `Base procesada el ${esc(meta.procesado)}. ` : ''}Fuente: ${fuenteDatos === 'supabase' ? 'base PostGIS en línea' : 'copia local de los datos'}.</p>`;
