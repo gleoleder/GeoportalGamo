@@ -11,8 +11,10 @@ let origenMarker = null;
 let destinoMarker = null;
 let seleccionandoPunto = null;
 let currentRoutes = [];
-let lineasFlujo = [];
-let flujoActivo = true;
+let flujoActivo = false;
+const flujos = {};
+let lienzos = {};
+let lienzoFlujo = null;
 let resumenDatos = null;
 let fuenteDatos = '';
 
@@ -43,14 +45,49 @@ const ACCESIBILIDAD = [
     ['NO ACCESIBLE', 'No accesible', '#a8423a'],
     ['INFERIDO', 'Inferida', '#7f8b97']
 ];
-// Rangos de pendiente (%): [mínimo incluido, máximo excluido, rótulo, color]
-const PENDIENTE = [
-    [-Infinity, 0.5, 'Menor a 0,5 %', '#a8423a'],
-    [0.5, 2, '0,5 – 2 %', '#d29b3d'],
-    [2, 5, '2 – 5 %', '#6fa6cf'],
-    [5, 10, '5 – 10 %', '#2f6f9f'],
-    [10, Infinity, '10 % o más', '#173f5f']
-];
+// Rangos de pendiente (%) configurables desde el panel. Cada rango es
+// [mínimo incluido, máximo excluido, rótulo, color].
+const PALETAS_PENDIENTE = {
+    riesgo: { nombre: 'Rojo a azul', colores: ['#a8423a', '#d29b3d', '#6fa6cf', '#2f6f9f', '#173f5f'] },
+    semaforo: { nombre: 'Rojo a verde', colores: ['#a8423a', '#d98c3f', '#d9c45a', '#7fb069', '#2f7d5c'] },
+    azules: { nombre: 'Azules', colores: ['#cfe1f0', '#94bddd', '#5a96c6', '#2f6f9f', '#163f61'] },
+    calido: { nombre: 'Amarillo a morado', colores: ['#f0cf6a', '#e68f4f', '#c4505a', '#7e3b6f', '#3b2a55'] }
+};
+const LIMITES_PREDETERMINADOS = [0.5, 2, 5, 10];
+let configPendiente = { modo: 'predeterminado', limites: LIMITES_PREDETERMINADOS, paleta: 'riesgo' };
+try {
+    const guardada = JSON.parse(localStorage.getItem('geoportal.pendiente') || 'null');
+    if (guardada && Array.isArray(guardada.limites) && PALETAS_PENDIENTE[guardada.paleta]) configPendiente = guardada;
+} catch (e) { /* sin almacenamiento local: se usan los valores predeterminados */ }
+
+function interpolarColores(colores, n) {
+    if (n === colores.length) return colores.slice();
+    const rgb = colores.map(c => [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16)));
+    return Array.from({ length: n }, (_, i) => {
+        const t = n === 1 ? 0 : i / (n - 1) * (rgb.length - 1);
+        const a = Math.floor(t), b = Math.min(a + 1, rgb.length - 1), f = t - a;
+        return '#' + rgb[a].map((v, k) => Math.round(v + (rgb[b][k] - v) * f).toString(16).padStart(2, '0')).join('');
+    });
+}
+
+function textoLimite(v) {
+    const dec = Number.isInteger(v) ? 0 : Number.isInteger(v * 10) ? 1 : 2;
+    return Number(v).toLocaleString('es-BO', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+function construirRangos(limites, paleta) {
+    const colores = interpolarColores(PALETAS_PENDIENTE[paleta].colores, limites.length + 1);
+    const bordes = [-Infinity, ...limites, Infinity];
+    return colores.map((color, i) => {
+        const min = bordes[i], max = bordes[i + 1];
+        const rotulo = min === -Infinity ? `Menor a ${textoLimite(max)} %`
+            : max === Infinity ? `${textoLimite(min)} % o más`
+            : `${textoLimite(min)} – ${textoLimite(max)} %`;
+        return [min, max, rotulo, color];
+    });
+}
+
+let PENDIENTE = construirRangos(configPendiente.limites, configPendiente.paleta);
 
 function rangoDe(rangos, v) {
     if (v === null || v === undefined || v === '' || isNaN(v)) return null;
@@ -372,6 +409,15 @@ function initMap() {
     map.getPane('pFlujo').style.pointerEvents = 'none';
     map.getPane('pEtiquetas').style.pointerEvents = 'none';
 
+    // Líneas y polígonos en canvas (más livianos que SVG con cientos de tramos);
+    // la animación del flujo usa SVG para poder animarse con CSS.
+    lienzos = {
+        pArea: L.canvas({ pane: 'pArea' }),
+        pCanales: L.canvas({ pane: 'pCanales', tolerance: 4 }),
+        pTuberias: L.canvas({ pane: 'pTuberias', tolerance: 6 })
+    };
+    lienzoFlujo = L.svg({ pane: 'pFlujo' });
+
     L.control.zoom({ position: 'topright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
     agregarControles();
     L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 140 }).addTo(map);
@@ -465,29 +511,33 @@ function vistaGeneral() {
 // ---------------------------------------------------------------------
 // Carga de datos
 // ---------------------------------------------------------------------
-async function obtenerGeojson() {
-    const cfg = window.GEOPORTAL_CONFIG || {};
-    if (cfg.supabaseUrl && cfg.supabaseAnonKey) {
-        try {
-            const headers = { apikey: cfg.supabaseAnonKey, 'Content-Type': 'application/json' };
-            // Las claves anon antiguas son JWT y también van en Authorization
-            if (cfg.supabaseAnonKey.startsWith('eyJ')) headers.Authorization = `Bearer ${cfg.supabaseAnonKey}`;
-            const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_datos`, {
-                method: 'POST', headers, body: '{}'
-            });
-            if (response.ok) {
-                fuenteDatos = 'supabase';
-                return await response.json();
-            }
-            console.warn('Supabase respondió', response.status, '— se usa datos.geojson');
-        } catch (error) {
-            console.warn('No se pudo leer Supabase — se usa datos.geojson:', error);
-        }
-    }
+// La copia local (GitHub Pages, servida desde un nodo cercano) se dibuja
+// primero; en paralelo se consulta la base en Supabase y, si sus datos son
+// más recientes, se vuelve a dibujar con ellos.
+async function obtenerLocal() {
     const response = await fetch('datos.geojson');
     if (!response.ok) throw new Error('No se pudo leer datos.geojson');
-    fuenteDatos = 'local';
     return response.json();
+}
+
+async function obtenerSupabase() {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) return null;
+    try {
+        const headers = { apikey: cfg.supabaseAnonKey, 'Content-Type': 'application/json' };
+        // Las claves anon antiguas son JWT y también van en Authorization
+        if (cfg.supabaseAnonKey.startsWith('eyJ')) headers.Authorization = `Bearer ${cfg.supabaseAnonKey}`;
+        const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_datos`, { method: 'POST', headers, body: '{}' });
+        if (response.ok) return await response.json();
+        console.warn('Supabase respondió', response.status);
+    } catch (error) {
+        console.warn('No se pudo consultar Supabase:', error);
+    }
+    return null;
+}
+
+function procesadoDe(geojson) {
+    return geojson?.resumen?.metadatos?.procesado || '';
 }
 
 function estadoDatos(clase, texto) {
@@ -498,33 +548,65 @@ function estadoDatos(clase, texto) {
 }
 
 async function cargarCapa() {
+    const enLinea = obtenerSupabase();
+    let local = null;
     try {
-        const geojson = await obtenerGeojson();
-        resumenDatos = geojson.resumen || null;
-        const features = geojson.features || [];
-        if (!features.length) throw new Error('La fuente de datos no tiene elementos');
-
-        ORDEN_PANEL.forEach(c => { registro[c] = []; visibles[c] = true; });
-        features.forEach(f => {
-            const capa = f.properties?._capa;
-            if (CAPAS[capa] && f.geometry) registro[capa].push({ capa, props: f.properties, geometry: f.geometry });
-        });
-
-        ORDEN_PANEL.forEach(construirCapa);
-        construirPanelCapas();
-        construirResumen();
-        actualizarZoom();
-        vistaGeneral();
-
-        estadoDatos(fuenteDatos === 'supabase' ? 'conectado' : 'local',
-            fuenteDatos === 'supabase' ? 'Base PostGIS en línea' : 'Copia local de los datos');
+        local = await obtenerLocal();
+        mostrarDatos(local);
+        fuenteDatos = 'local';
+        estadoDatos('', 'Verificando con la base en línea');
     } catch (error) {
-        console.error(error);
+        console.warn(error);
+    }
+
+    const remoto = await enLinea;
+    if (remoto) {
+        if (!local || procesadoDe(remoto) !== procesadoDe(local)) mostrarDatos(remoto);
+        fuenteDatos = 'supabase';
+        estadoDatos('conectado', 'Base PostGIS en línea');
+        construirResumen();
+    } else if (local) {
+        estadoDatos('local', 'Copia local de los datos');
+    } else {
         estadoDatos('fallo', 'Sin datos');
         document.getElementById('listaCapas').innerHTML =
-            `<p class="ayuda">No se pudieron cargar los datos (${esc(error.message)}). Recargue la página para intentarlo de nuevo.</p>`;
+            '<p class="ayuda">No se pudieron cargar los datos. Revise la conexión y recargue la página.</p>';
         aviso('No se pudieron cargar los datos del geoportal.', 'error');
     }
+}
+
+let datosDibujados = false;
+
+function mostrarDatos(geojson) {
+    const features = geojson.features || [];
+    if (!features.length) return;
+    if (datosDibujados) limpiarCapas();
+    resumenDatos = geojson.resumen || null;
+    ORDEN_PANEL.forEach(c => {
+        registro[c] = [];
+        if (visibles[c] === undefined) visibles[c] = true;
+    });
+    features.forEach(f => {
+        const capa = f.properties?._capa;
+        if (CAPAS[capa] && f.geometry) registro[capa].push({ capa, props: f.properties, geometry: f.geometry });
+    });
+    ORDEN_PANEL.forEach(construirCapa);
+    construirPanelCapas();
+    construirResumen();
+    actualizarZoom();
+    if (!datosDibujados) vistaGeneral();
+    datosDibujados = true;
+    performance.mark('geoportal-datos-dibujados');
+}
+
+function limpiarCapas() {
+    map.closePopup();
+    [grupos, etiquetas, flujos].forEach(coleccion => {
+        Object.keys(coleccion).forEach(c => {
+            if (map.hasLayer(coleccion[c])) map.removeLayer(coleccion[c]);
+            delete coleccion[c];
+        });
+    });
 }
 
 function construirCapa(capa) {
@@ -547,16 +629,19 @@ function construirCapa(capa) {
         } else if (capa === 'area') {
             layer = L.geoJSON(reg.geometry, {
                 pane: def.pane,
+                renderer: lienzos[def.pane],
                 interactive: false,
                 style: { color: def.color, weight: 2, dashArray: '10 6', fillColor: def.color, fillOpacity: 0.035 }
             });
         } else if (capa === 'canales') {
-            const casco = L.geoJSON(reg.geometry, { pane: def.pane, style: { color: '#ffffff', weight: 8, opacity: 0.9 } });
-            const eje = L.geoJSON(reg.geometry, { pane: def.pane, style: { color: def.color, weight: 4.5, opacity: 1 } });
+            const opciones = { pane: def.pane, renderer: lienzos[def.pane] };
+            const casco = L.geoJSON(reg.geometry, { ...opciones, style: { color: '#ffffff', weight: 8, opacity: 0.9 } });
+            const eje = L.geoJSON(reg.geometry, { ...opciones, style: { color: def.color, weight: 4.5, opacity: 1 } });
             layer = L.featureGroup([casco, eje]);
         } else {
             layer = L.geoJSON(reg.geometry, {
                 pane: def.pane,
+                renderer: lienzos[def.pane],
                 style: {
                     color: colorTema(capa, p),
                     weight: capa === 'tuberias_camaras' ? grosorTuberia(p) : 2.4,
@@ -564,14 +649,6 @@ function construirCapa(capa) {
                     dashArray: esInferida(p) ? '7 5' : null
                 }
             });
-            reg.etiqueta = crearEtiquetaPendiente(reg);
-            if (reg.etiqueta) (etiquetas[capa] ||= L.layerGroup()).addLayer(reg.etiqueta);
-            const flujo = L.geoJSON(reg.geometry, {
-                pane: 'pFlujo',
-                interactive: false,
-                style: { color: '#ffffff', weight: 1.6, opacity: 0.9, dashArray: '2 14', lineCap: 'round' }
-            });
-            reg.flujo = flujo;
         }
 
         if (capa !== 'area') {
@@ -625,13 +702,18 @@ function crearEtiquetaPendiente(reg) {
     });
 }
 
+// Las etiquetas se crean la primera vez que se necesitan
 function actualizarEtiquetas() {
     if (!map) return;
     const z = map.getZoom();
     ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
+        if (!registro[capa]) return;
+        const mostrar = etiquetasActivas && visibles[capa] && z >= CAPAS[capa].zoomEtiquetas;
+        if (mostrar && !etiquetas[capa]) {
+            etiquetas[capa] = L.layerGroup(registro[capa].map(crearEtiquetaPendiente).filter(Boolean));
+        }
         const g = etiquetas[capa];
         if (!g) return;
-        const mostrar = etiquetasActivas && visibles[capa] && z >= CAPAS[capa].zoomEtiquetas;
         if (mostrar && !map.hasLayer(g)) g.addTo(map);
         if (!mostrar && map.hasLayer(g)) map.removeLayer(g);
     });
@@ -650,6 +732,32 @@ function construirPanelCapas() {
             <h2 class="grupo__titulo">${esc(grupo)}</h2>
             ${capas.map(htmlCapa).join('')}
             ${grupo === 'Red de drenaje' ? `
+                <div class="capa rangos">
+                    <h3 class="rangos__titulo">Rangos de pendiente de las tuberías</h3>
+                    <div class="tema">
+                        <label for="rangoModo">Rangos</label>
+                        <select id="rangoModo">
+                            <option value="predeterminado">Predeterminados (0,5 · 2 · 5 · 10 %)</option>
+                            <option value="cuantiles">Cuantiles (5 clases con igual cantidad)</option>
+                            <option value="personalizado">Personalizados</option>
+                        </select>
+                    </div>
+                    <div class="tema">
+                        <label for="rangoPaleta">Colores</label>
+                        <select id="rangoPaleta">
+                            ${Object.entries(PALETAS_PENDIENTE).map(([k, p]) => `<option value="${k}">${esc(p.nombre)}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="rangos__escala" id="rangoEscala" aria-hidden="true"></div>
+                    <div id="rangoEditor" hidden>
+                        <label class="etiqueta" for="rangoLimites">Límites entre clases (%), separados por punto y coma</label>
+                        <div class="rangos__fila">
+                            <input class="campo" id="rangoLimites" inputmode="decimal" placeholder="0,5; 2; 5; 10">
+                            <button type="button" class="boton" id="rangoAplicar">Aplicar</button>
+                        </div>
+                        <p class="mensaje" id="rangoMensaje" role="status"></p>
+                    </div>
+                </div>
                 <label class="interruptor"><input type="checkbox" id="chkPendientes" ${etiquetasActivas ? 'checked' : ''}>
                 Mostrar la pendiente (%) sobre las tuberías</label>
                 <label class="interruptor"><input type="checkbox" id="chkFlujo" ${flujoActivo ? 'checked' : ''}>
@@ -666,6 +774,7 @@ function construirPanelCapas() {
         flujoActivo = e.target.checked;
         actualizarFlujo();
     });
+    prepararEditorRangos();
     document.getElementById('chkPendientes').addEventListener('change', e => {
         etiquetasActivas = e.target.checked;
         actualizarEtiquetas();
@@ -687,9 +796,9 @@ function htmlCapa(capa) {
         : n.toLocaleString('es-BO');
     const temas = TEMAS[capa];
     return `
-        <div class="capa" id="capa-${capa}">
+        <div class="capa${visibles[capa] === false ? ' apagada' : ''}" id="capa-${capa}">
             <div class="capa__cabeza">
-                <input type="checkbox" id="chk-${capa}" data-capa-chk="${capa}" checked>
+                <input type="checkbox" id="chk-${capa}" data-capa-chk="${capa}" ${visibles[capa] === false ? '' : 'checked'}>
                 <span class="capa__simbolo">${simboloCapa(capa)}</span>
                 <label class="capa__nombre" for="chk-${capa}">${esc(def.nombre)}</label>
                 <span class="capa__cuenta">${cuenta}</span>
@@ -751,6 +860,88 @@ function htmlLeyenda(capa) {
     return '';
 }
 
+// ---------------------------------------------------------------------
+// Rangos de pendiente editables
+// ---------------------------------------------------------------------
+function valoresPendiente() {
+    return ['tuberias_camaras', 'tuberias_sumideros']
+        .flatMap(c => (registro[c] || []).map(r => r.props.pendiente_pct))
+        .filter(v => v !== null && v !== undefined)
+        .sort((a, b) => a - b);
+}
+
+function limitesCuantiles(clases = 5) {
+    const v = valoresPendiente();
+    if (!v.length) return LIMITES_PREDETERMINADOS;
+    const limites = [];
+    for (let k = 1; k < clases; k++) {
+        const x = Math.round(v[Math.floor(k * v.length / clases)] * 10) / 10;
+        if (!limites.includes(x)) limites.push(x);
+    }
+    return limites;
+}
+
+function leerLimites(texto) {
+    const partes = texto.split(/[;\s]+/).map(p => p.trim()).filter(Boolean);
+    const valores = partes.map(p => Number(p.replace(',', '.')));
+    if (!valores.length) return { error: 'Escriba al menos un límite, por ejemplo: 0,5; 2; 5; 10' };
+    if (valores.some(v => !Number.isFinite(v))) return { error: 'Use solo números separados por punto y coma (;). Ejemplo: 0,5; 2; 5; 10' };
+    const limites = [...new Set(valores)].sort((a, b) => a - b);
+    if (limites.length > 8) return { error: 'Use como máximo 8 límites (9 clases).' };
+    return { limites };
+}
+
+function prepararEditorRangos() {
+    const modo = document.getElementById('rangoModo');
+    const paleta = document.getElementById('rangoPaleta');
+    const entrada = document.getElementById('rangoLimites');
+    modo.value = configPendiente.modo;
+    paleta.value = configPendiente.paleta;
+    entrada.value = configPendiente.limites.map(textoLimite).join('; ');
+    document.getElementById('rangoEditor').hidden = configPendiente.modo !== 'personalizado';
+    dibujarEscalaRangos();
+
+    modo.addEventListener('change', () => {
+        document.getElementById('rangoEditor').hidden = modo.value !== 'personalizado';
+        if (modo.value === 'predeterminado') aplicarRangos({ modo: 'predeterminado', limites: LIMITES_PREDETERMINADOS });
+        if (modo.value === 'cuantiles') aplicarRangos({ modo: 'cuantiles', limites: limitesCuantiles() });
+        if (modo.value === 'personalizado') entrada.focus();
+    });
+    paleta.addEventListener('change', () => aplicarRangos({ paleta: paleta.value }));
+    const aplicarPersonalizados = () => {
+        const r = leerLimites(entrada.value);
+        const msg = document.getElementById('rangoMensaje');
+        if (r.error) {
+            msg.textContent = r.error;
+            msg.className = 'mensaje error';
+            return;
+        }
+        msg.textContent = '';
+        aplicarRangos({ modo: 'personalizado', limites: r.limites });
+    };
+    document.getElementById('rangoAplicar').addEventListener('click', aplicarPersonalizados);
+    entrada.addEventListener('keydown', e => { if (e.key === 'Enter') aplicarPersonalizados(); });
+}
+
+function aplicarRangos(cambios) {
+    configPendiente = { ...configPendiente, ...cambios };
+    PENDIENTE = construirRangos(configPendiente.limites, configPendiente.paleta);
+    TEMAS.tuberias_camaras.pendiente_pct.rangos = PENDIENTE;
+    TEMAS.tuberias_sumideros.pendiente_pct.rangos = PENDIENTE;
+    ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => cambiarTema(capa, CAPAS[capa].tema));
+    document.getElementById('rangoLimites').value = configPendiente.limites.map(textoLimite).join('; ');
+    dibujarEscalaRangos();
+    construirResumen();
+    try { localStorage.setItem('geoportal.pendiente', JSON.stringify(configPendiente)); } catch (e) { /* sin almacenamiento */ }
+}
+
+function dibujarEscalaRangos() {
+    const el = document.getElementById('rangoEscala');
+    if (!el) return;
+    el.innerHTML = PENDIENTE.map(([, , rotulo, color]) =>
+        `<span style="background:${color}" title="${esc(rotulo)}"></span>`).join('');
+}
+
 function alternarCapa(capa, activa) {
     visibles[capa] = activa;
     document.getElementById(`capa-${capa}`).classList.toggle('apagada', !activa);
@@ -779,30 +970,26 @@ function cambiarTema(capa, campo) {
 // ---------------------------------------------------------------------
 // Animación del sentido del flujo
 // ---------------------------------------------------------------------
+// Líneas del sentido del flujo: una capa SVG por tipo de tubería, animada
+// con CSS (styles.css). Se crean solo al activar la animación.
 function actualizarFlujo() {
-    lineasFlujo = [];
     ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
-        (registro[capa] || []).forEach(reg => {
-            if (!reg.flujo) return;
-            const mostrar = flujoActivo && visibles[capa];
-            if (mostrar) {
-                if (!map.hasLayer(reg.flujo)) reg.flujo.addTo(map);
-                reg.flujo.eachLayer(l => lineasFlujo.push(l));
-            } else if (map.hasLayer(reg.flujo)) {
-                map.removeLayer(reg.flujo);
-            }
-        });
+        if (!registro[capa]) return;
+        const mostrar = flujoActivo && visibles[capa];
+        if (mostrar && !flujos[capa]) {
+            flujos[capa] = L.geoJSON({ type: 'FeatureCollection', features: registro[capa].map(r => ({ type: 'Feature', geometry: r.geometry })) }, {
+                pane: 'pFlujo',
+                renderer: lienzoFlujo,
+                interactive: false,
+                style: { color: '#ffffff', weight: 1.6, opacity: 0.9, dashArray: '2 14', lineCap: 'round' }
+            });
+        }
+        const f = flujos[capa];
+        if (!f) return;
+        if (mostrar && !map.hasLayer(f)) f.addTo(map);
+        if (!mostrar && map.hasLayer(f)) map.removeLayer(f);
     });
 }
-
-function animarFlujo() {
-    const offset = -(performance.now() / 50) % 16;
-    for (const linea of lineasFlujo) {
-        if (linea._path) linea._path.setAttribute('stroke-dashoffset', offset);
-    }
-    requestAnimationFrame(animarFlujo);
-}
-if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) requestAnimationFrame(animarFlujo);
 
 // ---------------------------------------------------------------------
 // Fichas

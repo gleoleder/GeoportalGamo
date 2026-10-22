@@ -279,6 +279,16 @@ body.panel-cerrado .panel { margin-left: calc(-1 * var(--panel-ancho)); }
 .leyenda .n { font-variant-numeric: tabular-nums; color: var(--tinta-3); }
 .leyenda .nota { font-size: 12px; color: var(--tinta-3); padding-top: 4px; }
 
+.rangos { background: var(--fondo); border-color: var(--borde-suave); }
+.rangos__titulo { margin: 0 0 10px; font-size: 13.5px; font-weight: 600; }
+.rangos .tema label { min-width: 52px; }
+.rangos__escala { display: flex; height: 8px; border-radius: 2px; overflow: hidden; margin: 2px 0 6px; }
+.rangos__escala span { flex: 1; }
+.rangos__fila { display: flex; gap: 6px; }
+.rangos__fila .campo { flex: 1; min-width: 0; }
+.rangos .etiqueta { margin-top: 8px; font-size: 12.5px; }
+.rangos .mensaje { margin-top: 6px; font-size: 12.5px; }
+
 .interruptor {
     display: flex;
     align-items: center;
@@ -562,6 +572,10 @@ select.campo { margin-bottom: 14px; }
 .marcador-ruta.origen { background: var(--ok); }
 .marcador-ruta.destino { background: var(--error); }
 .marcador-usuario { width: 16px; height: 16px; border-radius: 50%; background: #2d7dd2; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(45, 125, 210, 0.2); }
+
+/* Sentido del flujo: animación CSS de los trazos (sin JavaScript por cuadro) */
+.leaflet-pFlujo-pane path { animation: flujo 1.1s linear infinite; }
+@keyframes flujo { to { stroke-dashoffset: -16; } }
 
 /* Pendiente (%) sobre las tuberías */
 .etiqueta-pendiente { background: none; border: 0; }

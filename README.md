@@ -23,10 +23,16 @@ GeoJSON (EPSG:4326) las capas `camaras`, `sumideros`, `tuberias_camaras`,
 `tuberias_sumideros`, `canales`, `progresivas` y `area`, más un resumen del
 proceso.
 
-Para actualizar la copia local después de reprocesar la base:
+Para que la página cargue rápido, primero se dibuja `datos.geojson` (GitHub
+Pages lo sirve comprimido desde un nodo cercano) y en paralelo se consulta
+Supabase; si la base tiene datos más recientes, el mapa se actualiza solo.
+`python ejecutar.py` del proyecto PostGIS deja actualizado `datos.geojson`
+(opción `GEOPORTAL_DIR` en su `.env`); después hay que publicarlo:
 
 ```
-copy ..\DRENAJE_ORURO_POSTGIS\resultados\geoportal.geojson datos.geojson
+git add datos.geojson
+git commit -m "Actualizar datos"
+git push
 ```
 
 `convertir_gpkg.py` y la carpeta `geopacage/` corresponden a la versión
@@ -50,7 +56,11 @@ No abrir `index.html` con doble clic: `fetch()` no funciona sobre `file://`.
   estado o certeza; secciones de canal por estado estructural o certeza.
 - Leyendas con el número de elementos por categoría.
 - Tuberías con grosor según el diámetro y línea discontinua cuando el trazado
-  es inferido; animación opcional del sentido del flujo.
+  es inferido; pendiente (%) sobre cada tramo con flecha del sentido del
+  flujo; animación opcional del flujo (apagada por defecto).
+- Rangos de pendiente editables: predeterminados, cuantiles o límites
+  propios, con cuatro paletas de color (la elección se recuerda en el navegador).
+- Líneas dibujadas en canvas para que el mapa se mueva con fluidez.
 - Fichas emergentes con todos los atributos depurados, la fotografía de campo
   y las conexiones de cada elemento.
 - Ficha técnica en PDF (fotografía, mapa de ubicación y atributos).
