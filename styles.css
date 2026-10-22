@@ -129,6 +129,12 @@ button, input, select { font: inherit; color: inherit; }
 .barra__estado.conectado .punto { background: #4fae84; }
 .barra__estado.local .punto { background: #d9a441; }
 .barra__estado.fallo .punto { background: #d0655b; }
+/* Conectado en tiempo real: el punto late suavemente */
+.barra__estado.vivo .punto { animation: latido 2.4s ease-out infinite; }
+@keyframes latido {
+    from { box-shadow: 0 0 0 0 rgba(79, 174, 132, 0.65); }
+    to { box-shadow: 0 0 0 7px rgba(79, 174, 132, 0); }
+}
 
 /* ---------------------------------------------------------------------
    Estructura
@@ -596,6 +602,8 @@ select.campo { margin-bottom: 14px; }
     font-variant-numeric: tabular-nums;
     pointer-events: none;
 }
+.etiqueta-pendiente span.contra { color: #a8423a; border-color: rgba(168, 66, 58, 0.55); }
+.etiqueta-pendiente span.revisar { border: 1px dashed #a8423a; }
 
 .leaflet-tooltip.etiqueta-mapa {
     font-family: var(--mono);
@@ -691,6 +699,15 @@ select.campo { margin-bottom: 14px; }
     place-items: center;
     font-size: 13px;
     color: var(--tinta-3);
+}
+
+.ficha__perfil { margin: 0; padding: 12px 16px 0; }
+.ficha__perfil svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--borde-suave);
+    border-radius: var(--radio-chico);
 }
 
 .ficha__seccion { padding: 12px 16px 4px; }

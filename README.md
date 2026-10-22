@@ -25,7 +25,15 @@ proceso.
 
 Para que la página cargue rápido, primero se dibuja `datos.geojson` (GitHub
 Pages lo sirve comprimido desde un nodo cercano) y en paralelo se consulta
-Supabase; si la base tiene datos más recientes, el mapa se actualiza solo.
+Supabase; si la versión de la base es otra, el mapa se actualiza solo.
+
+**Tiempo real**: cada edición guardada desde QGIS cambia
+`public.geoportal_estado.version`. El geoportal escucha ese cambio con
+Supabase Realtime (supabase-js se descarga después de dibujar el mapa), vuelve
+a leer los datos y mantiene abierta la ficha que se estaba consultando. Si el
+canal en tiempo real no está disponible, consulta la versión cada minuto. El
+indicador de la barra superior late cuando la conexión en tiempo real está
+activa.
 `python ejecutar.py` del proyecto PostGIS deja actualizado `datos.geojson`
 (opción `GEOPORTAL_DIR` en su `.env`); después hay que publicarlo:
 
@@ -40,7 +48,7 @@ anterior (lectura directa de GeoPackage) y ya no generan el formato que usa
 la aplicación.
 
 La clave anon de `config.js` es pública por diseño: solo permite ejecutar la
-función de lectura. Nunca poner aquí la contraseña de la base ni la clave
+función de lectura y leer la versión de los datos. Nunca poner aquí la contraseña de la base ni la clave
 service_role.
 
 ## Cómo usar en local
@@ -55,15 +63,23 @@ No abrir `index.html` con doble clic: `fetch()` no funciona sobre `file://`.
   funcionamiento, condición interior o certeza; sumideros por condición,
   estado o certeza; secciones de canal por estado estructural o certeza.
 - Leyendas con el número de elementos por categoría.
-- Tuberías con grosor según el diámetro y línea discontinua cuando el trazado
-  es inferido; pendiente (%) sobre cada tramo con flecha del sentido del
-  flujo; animación opcional del flujo (apagada por defecto).
-- Rangos de pendiente editables: predeterminados, cuantiles o límites
-  propios, con cuatro paletas de color (la elección se recuerda en el navegador).
+- Tuberías en color único (predeterminado) o por pendiente, con grosor según
+  el diámetro y línea discontinua cuando el trazado es inferido; animación
+  del sentido del flujo (activa por defecto).
+- Pendiente en el sentido del flujo calculada con las cotas de fondo
+  (terreno del MDS menos la profundidad medida); etiqueta con signo y flecha
+  sobre cada tramo, en rojo las contrapendientes y con borde punteado los
+  valores a revisar.
+- Rangos de pendiente editables: predeterminados (con clase de
+  contrapendiente), cuantiles o límites propios, con cuatro paletas de color
+  (la elección se recuerda en el navegador).
 - Líneas dibujadas en canvas para que el mapa se mueva con fluidez.
 - Fichas emergentes con todos los atributos depurados, la fotografía de campo
-  y las conexiones de cada elemento.
-- Ficha técnica en PDF (fotografía, mapa de ubicación y atributos).
+  y las conexiones de cada elemento; las tuberías incluyen un perfil
+  longitudinal (terreno, cámaras y fondo de la tubería) y sus cotas.
+- Ficha técnica en PDF: fotografía o perfil, mapa de ubicación preciso
+  (teselas y elementos proyectados en EPSG:3857, con el elemento resaltado,
+  los vecinos, escala gráfica y norte) y atributos.
 - Búsqueda por código o nombre de canal, rutas (OSRM), geolocalización,
   coordenadas UTM 19S del cursor, escala y norte.
 

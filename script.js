@@ -11,7 +11,7 @@ let origenMarker = null;
 let destinoMarker = null;
 let seleccionandoPunto = null;
 let currentRoutes = [];
-let flujoActivo = false;
+let flujoActivo = true;
 const flujos = {};
 let lienzos = {};
 let lienzoFlujo = null;
@@ -53,10 +53,12 @@ const PALETAS_PENDIENTE = {
     azules: { nombre: 'Azules', colores: ['#cfe1f0', '#94bddd', '#5a96c6', '#2f6f9f', '#163f61'] },
     calido: { nombre: 'Amarillo a morado', colores: ['#f0cf6a', '#e68f4f', '#c4505a', '#7e3b6f', '#3b2a55'] }
 };
-const LIMITES_PREDETERMINADOS = [0.5, 2, 5, 10];
+// La pendiente tiene signo (sentido del flujo): bajo 0 % hay contrapendiente.
+const LIMITES_PREDETERMINADOS = [0, 0.5, 2, 5, 10];
+const CLAVE_RANGOS = 'geoportal.pendiente.v2';
 let configPendiente = { modo: 'predeterminado', limites: LIMITES_PREDETERMINADOS, paleta: 'riesgo' };
 try {
-    const guardada = JSON.parse(localStorage.getItem('geoportal.pendiente') || 'null');
+    const guardada = JSON.parse(localStorage.getItem(CLAVE_RANGOS) || 'null');
     if (guardada && Array.isArray(guardada.limites) && PALETAS_PENDIENTE[guardada.paleta]) configPendiente = guardada;
 } catch (e) { /* sin almacenamiento local: se usan los valores predeterminados */ }
 
@@ -80,7 +82,8 @@ function construirRangos(limites, paleta) {
     const bordes = [-Infinity, ...limites, Infinity];
     return colores.map((color, i) => {
         const min = bordes[i], max = bordes[i + 1];
-        const rotulo = min === -Infinity ? `Menor a ${textoLimite(max)} %`
+        const rotulo = min === -Infinity && max === 0 ? 'Contrapendiente (menor a 0 %)'
+            : min === -Infinity ? `Menor a ${textoLimite(max)} %`
             : max === Infinity ? `${textoLimite(min)} % o más`
             : `${textoLimite(min)} – ${textoLimite(max)} %`;
         return [min, max, rotulo, color];
@@ -92,6 +95,11 @@ let PENDIENTE = construirRangos(configPendiente.limites, configPendiente.paleta)
 function rangoDe(rangos, v) {
     if (v === null || v === undefined || v === '' || isNaN(v)) return null;
     return rangos.find(([min, max]) => Number(v) >= min && Number(v) < max) || null;
+}
+
+function colorPendiente(v) {
+    const r = rangoDe(PENDIENTE, v);
+    return r ? r[3] : SIN_DATO;
 }
 
 const TEMAS = {
@@ -113,20 +121,20 @@ const TEMAS = {
         nivel_certeza: { titulo: 'Nivel de certeza', clases: CERTEZA }
     },
     tuberias_camaras: {
-        pendiente_pct: { titulo: 'Pendiente', rangos: PENDIENTE },
-        unico: { titulo: 'Color único', unico: true }
+        unico: { titulo: 'Color único', unico: true },
+        pendiente_pct: { titulo: 'Pendiente en el sentido del flujo', rangos: PENDIENTE }
     },
     tuberias_sumideros: {
-        pendiente_pct: { titulo: 'Pendiente', rangos: PENDIENTE },
-        unico: { titulo: 'Color único', unico: true }
+        unico: { titulo: 'Color único', unico: true },
+        pendiente_pct: { titulo: 'Pendiente en el sentido del flujo', rangos: PENDIENTE }
     }
 };
 
 const CAPAS = {
     camaras: { nombre: 'Cámaras de inspección', grupo: 'Red de drenaje', tipo: 'punto', tema: 'accesibilidad', pane: 'pCamaras' },
     sumideros: { nombre: 'Sumideros', grupo: 'Red de drenaje', tipo: 'punto', tema: 'condicion', pane: 'pSumideros' },
-    tuberias_camaras: { nombre: 'Tuberías de cámaras', grupo: 'Red de drenaje', tipo: 'linea', tema: 'pendiente_pct', pane: 'pTuberias', color: '#24577a', zoomEtiquetas: 17 },
-    tuberias_sumideros: { nombre: 'Tuberías de sumideros', grupo: 'Red de drenaje', tipo: 'linea', tema: 'pendiente_pct', pane: 'pTuberias', color: '#5c9bc8', zoomEtiquetas: 19 },
+    tuberias_camaras: { nombre: 'Tuberías de cámaras', grupo: 'Red de drenaje', tipo: 'linea', tema: 'unico', pane: 'pTuberias', color: '#24577a', zoomEtiquetas: 17 },
+    tuberias_sumideros: { nombre: 'Tuberías de sumideros', grupo: 'Red de drenaje', tipo: 'linea', tema: 'unico', pane: 'pTuberias', color: '#5c9bc8', zoomEtiquetas: 19 },
     canales: { nombre: 'Ejes de canales', grupo: 'Canales', tipo: 'linea', pane: 'pCanales', color: '#127369' },
     progresivas: { nombre: 'Secciones levantadas', grupo: 'Canales', tipo: 'punto', tema: 'estado_estructural', pane: 'pProgresivas', zoomMin: 16 },
     area: { nombre: 'Área de estudio', grupo: 'Referencia', tipo: 'poligono', pane: 'pArea', color: '#13283b' }
@@ -164,6 +172,7 @@ const ETIQUETAS = {
     'HORMIGON': 'Hormigón',
     'HORMIGON CICLOPEO': 'Hormigón ciclópeo',
     'HORMIGON ARMADO': 'Hormigón armado',
+    'PVC': 'PVC',
     'METALICO': 'Metálico',
     'NINGUNA': 'Ninguna',
     'GEOMETRIA': 'Por conexión geométrica',
@@ -177,7 +186,12 @@ const ETIQUETAS = {
     'NO RESUELTO': 'Sin determinar',
     'OBSERVADA': 'Observada directamente',
     'ESTIMADA': 'Estimada (sin acceso al interior)',
-    'OTRA': 'Otra codificación'
+    'OTRA': 'Otra codificación',
+    'COTAS DE FONDO': 'Cotas de fondo (terreno menos profundidad)',
+    'TERRENO ENTRE CAMARAS': 'Terreno entre cámaras (sin profundidades)',
+    'MDS': 'Modelo digital de superficie',
+    'INTERPOLADA': 'Interpolada (elemento editado; falta muestrear el MDS)',
+    'EDICION': 'Edición en QGIS'
 };
 
 function esc(v) {
@@ -427,6 +441,7 @@ function initMap() {
     actualizarZoom();
     map.on('click', e => { if (seleccionandoPunto) agregarPuntoSeleccionado(e.latlng); });
     map.on('popupopen', e => prepararFicha(e.popup));
+    map.on('popupclose', () => { fichaVisible = null; });
 }
 
 function agregarControles() {
@@ -520,14 +535,19 @@ async function obtenerLocal() {
     return response.json();
 }
 
+function cabecerasSupabase() {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    const headers = { apikey: cfg.supabaseAnonKey, 'Content-Type': 'application/json' };
+    // Las claves anon antiguas son JWT y también van en Authorization
+    if (cfg.supabaseAnonKey.startsWith('eyJ')) headers.Authorization = `Bearer ${cfg.supabaseAnonKey}`;
+    return headers;
+}
+
 async function obtenerSupabase() {
     const cfg = window.GEOPORTAL_CONFIG || {};
     if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) return null;
     try {
-        const headers = { apikey: cfg.supabaseAnonKey, 'Content-Type': 'application/json' };
-        // Las claves anon antiguas son JWT y también van en Authorization
-        if (cfg.supabaseAnonKey.startsWith('eyJ')) headers.Authorization = `Bearer ${cfg.supabaseAnonKey}`;
-        const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_datos`, { method: 'POST', headers, body: '{}' });
+        const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_datos`, { method: 'POST', headers: cabecerasSupabase(), body: '{}' });
         if (response.ok) return await response.json();
         console.warn('Supabase respondió', response.status);
     } catch (error) {
@@ -536,8 +556,26 @@ async function obtenerSupabase() {
     return null;
 }
 
-function procesadoDe(geojson) {
-    return geojson?.resumen?.metadatos?.procesado || '';
+// Versión de los datos: cambia con cada procesamiento y con cada edición
+function versionDe(geojson) {
+    const meta = geojson?.resumen?.metadatos || {};
+    return meta.version || meta.procesado || '';
+}
+
+// Marca de tiempo de PostgreSQL (microsegundos) en milisegundos
+function tiempoDe(v) {
+    return Date.parse(String(v).replace(/(\.\d{3})\d+/, '$1'));
+}
+
+function mismaVersion(a, b) {
+    const ta = tiempoDe(a), tb = tiempoDe(b);
+    return Number.isNaN(ta) || Number.isNaN(tb) ? a === b : ta === tb;
+}
+
+function horaVersion(v) {
+    const t = tiempoDe(v);
+    return Number.isNaN(t) ? String(v)
+        : new Date(t).toLocaleString('es-BO', { timeZone: 'America/La_Paz', dateStyle: 'short', timeStyle: 'short', hourCycle: 'h23' });
 }
 
 function estadoDatos(clase, texto) {
@@ -561,10 +599,12 @@ async function cargarCapa() {
 
     const remoto = await enLinea;
     if (remoto) {
-        if (!local || procesadoDe(remoto) !== procesadoDe(local)) mostrarDatos(remoto);
+        if (!local || !mismaVersion(versionDe(remoto), versionDe(local))) redibujar(remoto);
+        versionActual = versionDe(remoto);
         fuenteDatos = 'supabase';
         estadoDatos('conectado', 'Base PostGIS en línea');
         construirResumen();
+        iniciarTiempoReal();
     } else if (local) {
         estadoDatos('local', 'Copia local de los datos');
     } else {
@@ -573,6 +613,95 @@ async function cargarCapa() {
             '<p class="ayuda">No se pudieron cargar los datos. Revise la conexión y recargue la página.</p>';
         aviso('No se pudieron cargar los datos del geoportal.', 'error');
     }
+}
+
+// ---------------------------------------------------------------------
+// Actualización en tiempo real
+// ---------------------------------------------------------------------
+// Cada edición guardada desde QGIS cambia public.geoportal_estado.version.
+// El geoportal escucha ese cambio con Supabase Realtime y vuelve a leer los
+// datos; si el canal no está disponible, consulta la versión cada minuto.
+const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
+let versionActual = '';
+let tiempoRealIniciado = false;
+let tiempoRealActivo = false;
+let actualizando = false;
+let temporizadorCambio = null;
+
+function iniciarTiempoReal() {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    if (tiempoRealIniciado || !cfg.supabaseUrl) return;
+    tiempoRealIniciado = true;
+    const revisar = async () => cambioDeVersion(await consultarVersion());
+    setInterval(() => { if (!document.hidden && !tiempoRealActivo) revisar(); }, 60000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) revisar(); });
+    cargarScript(SUPABASE_JS).then(() => {
+        const cliente = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+        cliente.channel('geoportal-estado')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'geoportal_estado' },
+                cambio => cambioDeVersion(cambio.new?.version))
+            .subscribe(estado => {
+                tiempoRealActivo = estado === 'SUBSCRIBED';
+                if (!actualizando) estadoEnLinea();
+            });
+    }).catch(error => console.warn('Tiempo real no disponible:', error));
+}
+
+async function consultarVersion() {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    try {
+        const response = await fetch(`${cfg.supabaseUrl}/rest/v1/geoportal_estado?select=version&id=eq.1`,
+            { headers: cabecerasSupabase(), cache: 'no-store' });
+        if (!response.ok) return null;
+        const [fila] = await response.json();
+        return fila?.version || null;
+    } catch (error) {
+        return null;
+    }
+}
+
+// QGIS guarda cada capa en una sentencia: se espera a que termine de guardar
+function cambioDeVersion(version) {
+    if (!version || mismaVersion(version, versionActual)) return;
+    clearTimeout(temporizadorCambio);
+    temporizadorCambio = setTimeout(actualizarDatos, 1200);
+}
+
+async function actualizarDatos() {
+    if (actualizando) {
+        temporizadorCambio = setTimeout(actualizarDatos, 1200);
+        return;
+    }
+    actualizando = true;
+    estadoDatos('conectado', 'Actualizando datos…');
+    try {
+        const datos = await obtenerSupabase();
+        if (datos && !mismaVersion(versionDe(datos), versionActual)) {
+            redibujar(datos);
+            versionActual = versionDe(datos);
+            fuenteDatos = 'supabase';
+            construirResumen();
+            aviso(`Datos actualizados desde la base (${horaVersion(versionActual)}).`);
+        }
+    } finally {
+        actualizando = false;
+        estadoEnLinea();
+    }
+}
+
+function estadoEnLinea() {
+    if (fuenteDatos !== 'supabase') return;
+    if (tiempoRealActivo) estadoDatos('conectado vivo', 'En línea · actualización en tiempo real');
+    else estadoDatos('conectado', 'Base PostGIS en línea');
+}
+
+// Redibuja conservando abierta la ficha que se estaba consultando
+function redibujar(datos) {
+    const abierta = fichaVisible;
+    mostrarDatos(datos);
+    if (!abierta) return;
+    const reg = (registro[abierta.capa] || []).find(r => r.props.codigo === abierta.codigo);
+    if (reg && map.hasLayer(grupos[reg.capa])) reg.layer.openPopup(reg.latlng || abierta.latlng);
 }
 
 let datosDibujados = false;
@@ -690,6 +819,8 @@ function crearEtiquetaPendiente(reg) {
     const invertida = angulo > 90 || angulo < -90;
     if (invertida) angulo += 180;
     const texto = `${numero(v, 1)} %`;
+    // Rojo: contrapendiente; borde punteado: valor a revisar
+    const clases = [v < 0 ? 'contra' : '', reg.props.pendiente_revisar ? 'revisar' : ''].join(' ').trim();
     return L.marker(medio, {
         pane: 'pEtiquetas',
         interactive: false,
@@ -697,7 +828,7 @@ function crearEtiquetaPendiente(reg) {
         icon: L.divIcon({
             className: 'etiqueta-pendiente',
             iconSize: [0, 0],
-            html: `<span style="transform:translate(-50%,-50%) rotate(${angulo.toFixed(1)}deg)">${invertida ? `← ${texto}` : `${texto} →`}</span>`
+            html: `<span class="${clases}" style="transform:translate(-50%,-50%) rotate(${angulo.toFixed(1)}deg)">${invertida ? `← ${texto}` : `${texto} →`}</span>`
         })
     });
 }
@@ -737,7 +868,7 @@ function construirPanelCapas() {
                     <div class="tema">
                         <label for="rangoModo">Rangos</label>
                         <select id="rangoModo">
-                            <option value="predeterminado">Predeterminados (0,5 · 2 · 5 · 10 %)</option>
+                            <option value="predeterminado">Predeterminados (0 · 0,5 · 2 · 5 · 10 %)</option>
                             <option value="cuantiles">Cuantiles (5 clases con igual cantidad)</option>
                             <option value="personalizado">Personalizados</option>
                         </select>
@@ -752,7 +883,7 @@ function construirPanelCapas() {
                     <div id="rangoEditor" hidden>
                         <label class="etiqueta" for="rangoLimites">Límites entre clases (%), separados por punto y coma</label>
                         <div class="rangos__fila">
-                            <input class="campo" id="rangoLimites" inputmode="decimal" placeholder="0,5; 2; 5; 10">
+                            <input class="campo" id="rangoLimites" inputmode="decimal" placeholder="0; 0,5; 2; 5; 10">
                             <button type="button" class="boton" id="rangoAplicar">Aplicar</button>
                         </div>
                         <p class="mensaje" id="rangoMensaje" role="status"></p>
@@ -829,7 +960,7 @@ function htmlLeyenda(capa) {
                 if (n) filas.push(`<li><span class="muestra">${svgLinea(color, 3)}</span><span class="texto">${esc(rotulo)}</span><span class="n">${n}</span></li>`);
             });
             const sin = regs.filter(r => !rangoDe(tema.rangos, r.props.pendiente_pct)).length;
-            if (sin) filas.push(`<li><span class="muestra">${svgLinea(SIN_DATO, 3)}</span><span class="texto">Sin pendiente registrada</span><span class="n">${sin}</span></li>`);
+            if (sin) filas.push(`<li><span class="muestra">${svgLinea(SIN_DATO, 3)}</span><span class="texto">Sin datos para calcular la pendiente</span><span class="n">${sin}</span></li>`);
         }
         const firme = regs.filter(r => !esInferida(r.props)).length;
         const gris = tema.rangos ? '#7a8897' : def.color;
@@ -837,7 +968,10 @@ function htmlLeyenda(capa) {
             `<li><span class="muestra">${svgLinea(gris, 3)}</span><span class="texto">Trazado confirmado o probable</span><span class="n">${firme}</span></li>`,
             `<li><span class="muestra">${svgLinea(gris, 3, true)}</span><span class="texto">Trazado inferido o no determinado</span><span class="n">${regs.length - firme}</span></li>`);
         if (capa === 'tuberias_camaras') filas.push('<li class="nota">El grosor es proporcional al diámetro.</li>');
-        filas.push(`<li class="nota">Pendiente registrada en la base del relevamiento. Las etiquetas (%) aparecen desde el zoom ${def.zoomEtiquetas}; la flecha indica el sentido del flujo.</li>`);
+        filas.push(`<li class="nota">${capa === 'tuberias_camaras'
+            ? 'Pendiente en el sentido del flujo, con las cotas de fondo (terreno del MDS menos la profundidad medida) o, sin profundidades, con el terreno entre cámaras.'
+            : 'Pendiente hidráulica en el sentido del flujo, con las cotas de fondo (terreno del MDS menos la profundidad medida).'}
+            Negativa = contrapendiente (etiqueta roja); borde punteado = valor a revisar. Las etiquetas aparecen desde el zoom ${def.zoomEtiquetas}; la flecha indica el sentido del flujo.</li>`);
         return filas.join('');
     }
     if (TEMAS[capa]) {
@@ -928,11 +1062,16 @@ function aplicarRangos(cambios) {
     PENDIENTE = construirRangos(configPendiente.limites, configPendiente.paleta);
     TEMAS.tuberias_camaras.pendiente_pct.rangos = PENDIENTE;
     TEMAS.tuberias_sumideros.pendiente_pct.rangos = PENDIENTE;
-    ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => cambiarTema(capa, CAPAS[capa].tema));
+    // Al elegir rangos, las tuberías pasan a simbolizarse por pendiente
+    ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
+        const selector = document.getElementById(`tema-${capa}`);
+        if (selector) selector.value = 'pendiente_pct';
+        cambiarTema(capa, 'pendiente_pct');
+    });
     document.getElementById('rangoLimites').value = configPendiente.limites.map(textoLimite).join('; ');
     dibujarEscalaRangos();
     construirResumen();
-    try { localStorage.setItem('geoportal.pendiente', JSON.stringify(configPendiente)); } catch (e) { /* sin almacenamiento */ }
+    try { localStorage.setItem(CLAVE_RANGOS, JSON.stringify(configPendiente)); } catch (e) { /* sin almacenamiento */ }
 }
 
 function dibujarEscalaRangos() {
@@ -1037,7 +1176,8 @@ const FICHAS = {
                 ['material_rasante', 'Material de la rasante', 'texto'],
                 ['este', 'Este (UTM 19S)', 'num:2:m'],
                 ['norte', 'Norte (UTM 19S)', 'num:2:m'],
-                ['elevacion_mds_m', 'Elevación (MDS)', 'num:2:m']]]
+                ['elevacion_mds_m', 'Elevación del terreno', 'num:2:m'],
+                ['elevacion_fuente', 'Fuente de la elevación', 'texto']]]
         ],
         foto: p => p.foto_url || p.foto_descarga_url,
         texto: [['observaciones', 'Observaciones de campo']]
@@ -1073,7 +1213,8 @@ const FICHAS = {
                 ['sector', 'Sector', 'sector'],
                 ['este', 'Este (UTM 19S)', 'num:2:m'],
                 ['norte', 'Norte (UTM 19S)', 'num:2:m'],
-                ['elevacion_mds_m', 'Elevación (MDS)', 'num:2:m']]]
+                ['elevacion_mds_m', 'Elevación del terreno', 'num:2:m'],
+                ['elevacion_fuente', 'Fuente de la elevación', 'texto']]]
         ],
         foto: p => p.foto_url || p.foto_descarga_url,
         texto: [['justificacion', 'Motivo (apertura)'], ['observaciones', 'Observaciones de campo']]
@@ -1081,12 +1222,25 @@ const FICHAS = {
     tuberias_camaras: {
         tipo: 'Tubería de cámara',
         subtitulo: p => `${p.origen || '¿?'} → ${conCanales(p.destino) || '¿?'}`,
+        perfil: true,
         secciones: [
             ['Pendiente', [
-                ['pendiente_pct', 'Pendiente registrada', 'pendiente'],
+                ['pendiente_pct', 'Pendiente en el sentido del flujo', 'pendiente'],
+                ['observacion_pendiente', 'Interpretación', 'observacion'],
+                ['metodo_pendiente', 'Calculada con', 'texto'],
+                ['pendiente_pct', 'Desnivel en el tramo', 'desnivel'],
                 ['longitud_m', 'Longitud del tramo', 'num:2:m'],
                 ['distancia_campo_m', 'Distancia registrada en campo', 'num:2:m'],
-                ['pendiente_pct', 'Desnivel según la pendiente', 'desnivel']]],
+                ['pendiente_hidraulica_pct', 'Pendiente hidráulica (cotas de fondo)', 'num:2:%'],
+                ['pendiente_terreno_pct', 'Pendiente del terreno', 'num:2:%'],
+                ['pendiente_registrada_pct', 'Pendiente de la base de campo (sin signo)', 'num:2:%']]],
+            ['Cotas', [
+                ['elevacion_inicio_m', 'Terreno en el origen', 'num:2:m'],
+                ['prof_inicio_m', 'Profundidad en el origen', 'num:2:m'],
+                ['cota_fondo_inicio_m', 'Cota de fondo en el origen', 'num:2:m'],
+                ['elevacion_fin_m', 'Terreno en el destino', 'num:2:m'],
+                ['prof_fin_m', 'Profundidad en el destino', 'num:2:m'],
+                ['cota_fondo_fin_m', 'Cota de fondo en el destino', 'num:2:m']]],
             ['Conexión', [
                 ['origen', 'Origen', 'mono'],
                 ['destino', 'Destino', 'canal'],
@@ -1100,14 +1254,10 @@ const FICHAS = {
                 ['diametro_pulg', 'Diámetro', 'num:0:pulg'],
                 ['profundidad_m', 'Profundidad', 'num:2:m'],
                 ['estado', 'Estado', 'estado:ESTADO'],
-                ['codigo_campo', 'Código registrado en campo', 'mono']]],
-            ['Superficie del terreno (MDS)', [
-                ['elevacion_inicio_m', 'Elevación en el inicio', 'num:2:m'],
-                ['elevacion_fin_m', 'Elevación en el final', 'num:2:m'],
-                ['pendiente_superficial_pct', 'Pendiente de la superficie', 'num:2:%']]]
+                ['codigo_campo', 'Código registrado en campo', 'mono']]]
         ],
         texto: [['observaciones', 'Observaciones de campo']],
-        nota: 'La pendiente registrada proviene de la base del relevamiento. La pendiente de la superficie se calculó con el MDS entre los extremos del tramo; es una referencia del terreno y no la pendiente hidráulica de la tubería.'
+        nota: 'Pendiente = (cota de fondo en el origen − cota de fondo en el destino) / longitud × 100, en el sentido del flujo. Cota de fondo = elevación del terreno (MDS) menos la profundidad medida en campo. Sin profundidades se usa la pendiente del terreno entre cámaras. Negativa = contrapendiente.'
     },
     tuberias_sumideros: null,
     canales: {
@@ -1178,12 +1328,12 @@ const FICHAS = {
         texto: [['observaciones', 'Observaciones de campo']]
     }
 };
-// Las tuberías de sumidero son tramos cortos: no se informa la superficie del MDS
+// Tuberías de sumidero: tramos cortos de la acera a la calzada; el terreno
+// no representa la tubería y solo se informa la pendiente hidráulica.
 FICHAS.tuberias_sumideros = {
     ...FICHAS.tuberias_camaras,
     tipo: 'Tubería de sumidero',
-    secciones: FICHAS.tuberias_camaras.secciones.filter(([titulo]) => !titulo.startsWith('Superficie')),
-    nota: 'La pendiente registrada proviene de la base del relevamiento.'
+    nota: 'Pendiente hidráulica = (cota de fondo en el sumidero − cota de fondo en el destino) / longitud × 100. Cota de fondo = elevación del terreno (MDS) menos la profundidad medida. En tramos cortos es muy sensible a los errores de profundidad. Negativa = contrapendiente.'
 };
 
 const PALETAS = { ESTADO, CONDICION, CERTEZA, ACCESIBILIDAD };
@@ -1209,10 +1359,10 @@ function valorCampo(props, [campo, , formato]) {
         return n === null ? null : { texto: unidad ? `${n} ${unidad}` : n };
     }
     switch (formato) {
-        case 'pendiente': {
-            const r = rangoDe(PENDIENTE, v);
-            return { texto: `${numero(v, 2)} %`, color: r ? r[3] : SIN_DATO };
-        }
+        case 'pendiente':
+            return { texto: `${numero(v, 2)} %`, color: colorPendiente(v) };
+        case 'observacion':
+            return { texto: String(v), color: props.pendiente_revisar ? '#a8423a' : '#c39233' };
         case 'desnivel':
             return props.longitud_m ? { texto: `${numero(v * props.longitud_m / 100, 2)} m` } : null;
         case 'mono': return { texto: String(v), mono: true };
@@ -1250,6 +1400,7 @@ function colorFicha(reg) {
 }
 
 let fichaActual = null;
+let fichaVisible = null;  // ficha abierta: { capa, codigo, latlng }
 
 function htmlFicha(reg) {
     fichaActual = reg;
@@ -1261,8 +1412,8 @@ function htmlFicha(reg) {
     if (p.nivel_certeza) chips.push(`<i style="background:${colorDe(CERTEZA, p.nivel_certeza)}"></i>${etiqueta(p.nivel_certeza)}`);
     if (reg.capa === 'progresivas' && p.cod_canal) chips.push(p.cod_canal);
     if (p.pendiente_pct !== undefined && p.pendiente_pct !== null && reg.capa.startsWith('tuberias')) {
-        const r = rangoDe(PENDIENTE, p.pendiente_pct);
-        chips.unshift(`<i style="background:${r ? r[3] : SIN_DATO}"></i>Pendiente ${numero(p.pendiente_pct, 2)} %`);
+        chips.unshift(`<i style="background:${colorPendiente(p.pendiente_pct)}"></i>Pendiente ${numero(p.pendiente_pct, 2)} %`);
+        if (p.pendiente_revisar) chips.push('A revisar');
     }
 
     const foto = def.foto ? def.foto(p) : null;
@@ -1296,6 +1447,7 @@ function htmlFicha(reg) {
                         ${urls.length ? `<img src="${esc(urls[0])}" alt="Fotografía de campo de ${esc(p.codigo)}" loading="lazy" referrerpolicy="no-referrer" data-urls='${esc(JSON.stringify(urls))}' data-original="${esc(foto)}">` : ''}
                         <div class="sin-foto" ${urls.length ? 'hidden' : ''}>Sin fotografía registrada</div>
                     </div>` : ''}
+                ${def.perfil ? htmlPerfil(p) : ''}
                 ${cuerpo}${textos}${nota}
             </div>
             <footer class="ficha__pie">
@@ -1309,11 +1461,51 @@ function htmlFicha(reg) {
         </article>`;
 }
 
+// Perfil longitudinal esquemático del tramo: terreno (MDS), cámaras o
+// sumideros en los extremos y fondo de la tubería, con exageración vertical.
+function svgPerfil(p, W = 320, H = 132) {
+    const largo = Number(p.longitud_m);
+    if (p.elevacion_inicio_m == null || p.elevacion_fin_m == null || !largo) return null;
+    const zo = Number(p.elevacion_inicio_m), zd = Number(p.elevacion_fin_m);
+    const conFondo = p.cota_fondo_inicio_m != null && p.cota_fondo_fin_m != null;
+    const fo = Number(p.cota_fondo_inicio_m), fd = Number(p.cota_fondo_fin_m);
+    const zs = conFondo ? [zo, zd, fo, fd] : [zo, zd];
+    const min = Math.min(...zs), rango = Math.max(Math.max(...zs) - min, 0.5);
+    const x0 = 48, x1 = W - 48, yA = 34, yB = H - 34;
+    const y = z => +(yB - (z - min) / rango * (yB - yA)).toFixed(1);
+    const exageracion = ((yB - yA) / rango) / ((x1 - x0) / largo);
+    const corto = t => { const c = conCanales(t) || '¿?'; return c.length > 16 ? `${c.slice(0, 15)}…` : c; };
+    const pozo = (x, zt, zf) => `<rect x="${x - 5}" y="${y(zt)}" width="10" height="${Math.max(y(zf) - y(zt), 2).toFixed(1)}" fill="#fff" stroke="#22303d" stroke-width="1.2"/>`;
+    const cota = (x, z, ancla) => `<text x="${x}" y="${y(z) + 4}" text-anchor="${ancla}" font-size="9.5" fill="#4b5966">${numero(z, 2)}</text>`;
+    const halo = 'stroke="#f6f8fa" stroke-width="3" paint-order="stroke"';
+    const ym = conFondo ? (y(fo) + y(fd)) / 2 : (y(zo) + y(zd)) / 2;
+    const texto = p.pendiente_pct != null ? `${numero(p.pendiente_pct, 2)} % →` : 'Sentido del flujo →';
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="IBM Plex Sans, Arial, sans-serif">
+        <rect width="${W}" height="${H}" fill="#f6f8fa"/>
+        ${conFondo ? `<polygon points="${x0},${y(zo)} ${x1},${y(zd)} ${x1},${y(fd)} ${x0},${y(fo)}" fill="#ece4d6"/>` : ''}
+        <polyline points="${x0 - 34},${y(zo)} ${x0},${y(zo)} ${x1},${y(zd)} ${x1 + 34},${y(zd)}" fill="none" stroke="#8a7a62" stroke-width="2"/>
+        ${conFondo ? `${pozo(x0, zo, fo)}${pozo(x1, zd, fd)}
+        <line x1="${x0}" y1="${y(fo)}" x2="${x1}" y2="${y(fd)}" stroke="${colorPendiente(p.pendiente_pct)}" stroke-width="4" stroke-linecap="round"/>
+        ${cota(x0 - 8, fo, 'end')}${cota(x1 + 8, fd, 'start')}` : ''}
+        <text x="${x0}" y="15" text-anchor="middle" font-size="10.5" font-weight="600" fill="#16222e">${esc(corto(p.origen))}</text>
+        <text x="${x1}" y="15" text-anchor="middle" font-size="10.5" font-weight="600" fill="#16222e">${esc(corto(p.destino))}</text>
+        <text x="${(x0 + x1) / 2}" y="${(ym - 9).toFixed(1)}" text-anchor="middle" font-size="11" font-weight="600" fill="${p.pendiente_pct < 0 ? '#a8423a' : '#16222e'}" ${halo}>${texto}</text>
+        <text x="6" y="${H - 8}" font-size="9" fill="#7a8897">${numero(largo, 1)} m · exageración vertical ×${numero(exageracion, exageracion < 10 ? 1 : 0)}</text>
+        <text x="${W - 6}" y="${H - 8}" text-anchor="end" font-size="9" fill="#7a8897">${conFondo ? 'Terreno (MDS) y fondo de la tubería' : 'Solo terreno: sin profundidades'}</text>
+    </svg>`;
+}
+
+function htmlPerfil(p) {
+    const svg = svgPerfil(p);
+    return svg ? `<figure class="ficha__perfil" aria-label="Perfil longitudinal del tramo">${svg}</figure>` : '';
+}
+
 // Fotos con URLs alternativas y acciones de la ficha
 function prepararFicha(popup) {
     const el = popup.getElement();
     if (!el) return;
     el._reg = fichaActual;
+    fichaVisible = fichaActual ? { capa: fichaActual.capa, codigo: fichaActual.props.codigo, latlng: popup.getLatLng() } : null;
     if (!el.dataset.listo) {
         el.dataset.listo = '1';
         el.addEventListener('click', e => {
@@ -1471,7 +1663,9 @@ function construirResumen() {
             : (valores[valores.length / 2 - 1] + valores[valores.length / 2]) / 2;
         const conteo = PENDIENTE.map(([, , r, c]) => [r, c, regs.filter(x => rangoDe(PENDIENTE, x.props.pendiente_pct)?.[2] === r).length]).filter(x => x[2]);
         const sin = regs.length - valores.length;
-        if (sin) conteo.push(['Sin pendiente registrada', SIN_DATO, sin]);
+        if (sin) conteo.push(['Sin datos para calcular', SIN_DATO, sin]);
+        const contra = valores.filter(v => v < 0).length;
+        const revisar = regs.filter(r => r.props.pendiente_revisar).length;
         return `
             <div class="distribucion">
                 <h3>${esc(titulo)}</h3>
@@ -1479,7 +1673,7 @@ function construirResumen() {
                     ${conteo.map(([, c, v]) => `<span style="width:${(100 * v / regs.length).toFixed(2)}%;background:${c}"></span>`).join('')}
                 </div>
                 <ul>${conteo.map(([r, c, v]) => `<li><i style="background:${c}"></i>${esc(r)}<span class="n">${v} · ${numero(100 * v / regs.length, 1)} %</span></li>`).join('')}</ul>
-                <p class="ayuda" style="margin:6px 0 0">Mediana: ${numero(mediana, 2)} % · rango ${numero(valores[0], 2)} – ${numero(valores[valores.length - 1], 2)} %</p>
+                <p class="ayuda" style="margin:6px 0 0">Mediana: ${numero(mediana, 2)} % · de ${numero(valores[0], 2)} a ${numero(valores[valores.length - 1], 2)} % · ${contra} en contrapendiente · ${revisar} a revisar</p>
             </div>`;
     };
 
@@ -1503,7 +1697,7 @@ function construirResumen() {
         ${htmlPendiente('Tuberías de sumideros por pendiente', 'tuberias_sumideros')}
         ${htmlCerteza}
         ${totalInc ? `<p class="pie-dato">Control de calidad: ${inc.CORRECCION || 0} correcciones con reglas documentadas, ${inc.ADVERTENCIA || 0} advertencias y ${inc.ERROR || 0} errores pendientes de verificación.</p>` : ''}
-        <p class="pie-dato">${meta.procesado ? `Base procesada el ${esc(meta.procesado)}. ` : ''}Fuente: ${fuenteDatos === 'supabase' ? 'base PostGIS en línea' : 'copia local de los datos'}.</p>`;
+        <p class="pie-dato">${meta.procesado ? `Base procesada el ${esc(meta.procesado)}. ` : ''}${meta.version ? `Última actualización: ${esc(horaVersion(meta.version))}. ` : ''}${meta.ediciones ? `${meta.ediciones} ediciones desde QGIS. ` : ''}Fuente: ${fuenteDatos === 'supabase' ? 'base PostGIS en línea' : 'copia local de los datos'}.</p>`;
 }
 
 // ---------------------------------------------------------------------
@@ -1740,55 +1934,261 @@ async function cargarImagenBase64(url) {
     return null;
 }
 
-// Mapa de ubicación a partir de teselas de OpenStreetMap (3 × 3)
-async function generarMapaEstatico(lat, lon, zoom = 17, width = 400, height = 280) {
+// Mapa de ubicación para la ficha PDF. Las teselas de OpenStreetMap y los
+// elementos se proyectan con la misma transformación del mapa (EPSG:3857),
+// así el elemento queda exactamente en su posición.
+function cargarTesela(z, x, y) {
     return new Promise(resolve => {
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        const n = Math.pow(2, zoom);
-        const xf = (lon + 180) / 360 * n;
-        const yf = (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n;
-        const xtile = Math.floor(xf), ytile = Math.floor(yf);
-        const xOffset = (xf - xtile) * 256, yOffset = (yf - ytile) * 256;
-        ctx.fillStyle = '#e9edf1';
-        ctx.fillRect(0, 0, width, height);
-        let cargadas = 0;
-        const terminar = () => {
-            dibujarMarcador(ctx, width / 2, height / 2);
-            resolve(canvas.toDataURL('image/png'));
-        };
-        for (let dx = -1; dx <= 1; dx++) {
-            for (let dy = -1; dy <= 1; dy++) {
-                const img = new Image();
-                img.crossOrigin = 'anonymous';
-                img.onload = () => {
-                    ctx.drawImage(img, (dx + 1) * 256 - xOffset - (384 - width / 2), (dy + 1) * 256 - yOffset - (384 - height / 2), 256, 256);
-                    if (++cargadas === 9) terminar();
-                };
-                img.onerror = () => { if (++cargadas === 9) terminar(); };
-                img.src = `https://tile.openstreetmap.org/${zoom}/${xtile + dx}/${ytile + dy}.png`;
-            }
-        }
-        setTimeout(() => { if (cargadas < 9) terminar(); }, 6000);
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
     });
 }
 
-function dibujarMarcador(ctx, x, y) {
-    ctx.beginPath();
-    ctx.arc(x, y, 9, 0, Math.PI * 2);
+function coordenadasDe(geometry) {
+    switch (geometry.type) {
+        case 'Point': return [geometry.coordinates];
+        case 'LineString': return geometry.coordinates;
+        case 'MultiLineString':
+        case 'Polygon': return geometry.coordinates.flat();
+        case 'MultiPolygon': return geometry.coordinates.flat(2);
+        default: return [];
+    }
+}
+
+function lineasDe(geometry) {
+    if (geometry.type === 'LineString') return [geometry.coordinates];
+    if (geometry.type === 'MultiLineString') return geometry.coordinates;
+    return [];
+}
+
+// Punto a mitad del recorrido de una polilínea (en píxeles) y su dirección
+function puntoMedio(pts) {
+    const largos = pts.slice(1).map((q, i) => q.distanceTo(pts[i]));
+    const total = largos.reduce((s, d) => s + d, 0);
+    let i = 0, acumulado = 0;
+    while (i < largos.length - 1 && acumulado + largos[i] < total / 2) acumulado += largos[i++];
+    const a = pts[i], b = pts[i + 1] || pts[i];
+    const t = largos[i] ? (total / 2 - acumulado) / largos[i] : 0;
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, angulo: Math.atan2(b.y - a.y, b.x - a.x) };
+}
+
+async function generarMapaUbicacion(reg, ancho = 960, alto = 618) {
+    const crs = L.CRS.EPSG3857;
+    const coords = coordenadasDe(reg.geometry);
+    if (!coords.length) return null;
+    const limites = L.latLngBounds(coords.map(([lon, lat]) => L.latLng(lat, lon)));
+    // El mayor zoom (hasta 19) en el que el elemento ocupa como máximo el 70 % del mapa
+    let z = 19;
+    while (z > 12) {
+        const a = crs.latLngToPoint(limites.getNorthWest(), z);
+        const b = crs.latLngToPoint(limites.getSouthEast(), z);
+        if (b.x - a.x <= ancho * 0.7 && b.y - a.y <= alto * 0.7) break;
+        z--;
+    }
+    const centro = limites.getCenter();
+    const origen = crs.latLngToPoint(centro, z).subtract([ancho / 2, alto / 2]).round();
+    const px = ([lon, lat]) => crs.latLngToPoint(L.latLng(lat, lon), z).subtract(origen);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = ancho;
+    canvas.height = alto;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#eef1f4';
+    ctx.fillRect(0, 0, ancho, alto);
+
+    // Teselas en gris, como en el geoportal; las que no llegan a tiempo se omiten
+    let abierto = true;
+    const pedidos = [];
+    for (let tx = Math.floor(origen.x / 256); tx <= Math.floor((origen.x + ancho) / 256); tx++) {
+        for (let ty = Math.floor(origen.y / 256); ty <= Math.floor((origen.y + alto) / 256); ty++) {
+            pedidos.push(cargarTesela(z, tx, ty).then(img => {
+                if (!img || !abierto) return;
+                ctx.filter = 'grayscale(1) brightness(1.03)';
+                ctx.drawImage(img, tx * 256 - origen.x, ty * 256 - origen.y, 256, 256);
+                ctx.filter = 'none';
+            }));
+        }
+    }
+    await Promise.race([Promise.all(pedidos), new Promise(r => setTimeout(r, 8000))]);
+    abierto = false;
+
+    // Contexto: canales, tuberías, sumideros y cámaras cercanos
+    const dentro = pts => pts.some(q => q.x > -40 && q.y > -40 && q.x < ancho + 40 && q.y < alto + 40);
+    const trazo = (lineas, color, grosor) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = grosor;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        lineas.forEach(pts => {
+            ctx.beginPath();
+            pts.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+            ctx.stroke();
+        });
+    };
+    const lineasCapa = capa => (registro[capa] || []).flatMap(r => lineasDe(r.geometry).map(l => l.map(px))).filter(dentro);
+    const canales = lineasCapa('canales');
+    trazo(canales, '#ffffff', 9);
+    trazo(canales, '#127369', 5);
+    trazo(lineasCapa('tuberias_camaras'), '#24577a', 3);
+    trazo(lineasCapa('tuberias_sumideros'), '#5c9bc8', 2);
     ctx.fillStyle = '#ffffff';
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(x, y, 6, 0, Math.PI * 2);
-    ctx.fillStyle = '#a8423a';
-    ctx.fill();
+    ctx.strokeStyle = '#22303d';
+    ctx.lineWidth = 1.6;
+    (registro.sumideros || []).map(r => px(r.geometry.coordinates)).filter(q => dentro([q])).forEach(q => {
+        ctx.fillRect(q.x - 4.5, q.y - 4.5, 9, 9);
+        ctx.strokeRect(q.x - 4.5, q.y - 4.5, 9, 9);
+    });
+    (registro.camaras || []).map(r => px(r.geometry.coordinates)).filter(q => dentro([q])).forEach(q => {
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+    });
+
+    // Elemento de la ficha, resaltado
+    const rojo = '#a8423a';
+    let ancla;
+    if (reg.geometry.type === 'Point') {
+        ancla = px(reg.geometry.coordinates);
+        ctx.fillStyle = 'rgba(168, 66, 58, 0.2)';
+        ctx.beginPath();
+        ctx.arc(ancla.x, ancla.y, 24, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = rojo;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(ancla.x, ancla.y, 9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#13283b';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(ancla.x, ancla.y, 10.5, 0, Math.PI * 2);
+        ctx.stroke();
+    } else {
+        const lineas = lineasDe(reg.geometry).map(l => l.map(px));
+        trazo(lineas, '#ffffff', 11);
+        trazo(lineas, rojo, 6);
+        const mayor = lineas.reduce((a, b) => (b.length > a.length ? b : a), lineas[0]);
+        ancla = puntoMedio(mayor);
+        // Sentido del flujo de las tuberías (origen → destino)
+        if (reg.capa.startsWith('tuberias')) {
+            ctx.save();
+            ctx.translate(ancla.x, ancla.y);
+            ctx.rotate(ancla.angulo);
+            ctx.beginPath();
+            ctx.moveTo(11, 0);
+            ctx.lineTo(-8, -8);
+            ctx.lineTo(-3, 0);
+            ctx.lineTo(-8, 8);
+            ctx.closePath();
+            ctx.fillStyle = '#ffffff';
+            ctx.strokeStyle = '#13283b';
+            ctx.lineWidth = 1.5;
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    // Rótulo con el código
+    const texto = reg.capa === 'canales' ? nombreCanal(reg.props.nombre) : String(reg.props.codigo || '');
+    ctx.font = '600 22px "IBM Plex Mono", Consolas, monospace';
+    const w = ctx.measureText(texto).width + 18;
+    let lx = ancla.x + 20, ly = ancla.y - 50;
+    if (lx + w > ancho - 10) lx = ancla.x - 20 - w;
+    if (ly < 10) ly = ancla.y + 20;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
     ctx.strokeStyle = '#13283b';
     ctx.lineWidth = 1.5;
+    ctx.fillRect(lx, ly, w, 32);
+    ctx.strokeRect(lx, ly, w, 32);
+    ctx.fillStyle = '#13283b';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(texto, lx + 9, ly + 17);
+
+    // Escala gráfica (resolución de la proyección en la latitud del centro)
+    const mPorPx = 40075016.686 * Math.cos(centro.lat * Math.PI / 180) / (256 * 2 ** z);
+    const metros = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000].filter(v => v / mPorPx <= ancho * 0.22).pop() || 5;
+    const largo = metros / mPorPx;
+    const ex = 22, ey = alto - 24;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.fillRect(ex - 12, ey - 34, largo + 52, 50);
+    ctx.fillStyle = '#13283b';
+    ctx.fillRect(ex, ey, largo / 2, 8);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(ex + largo / 2, ey, largo / 2, 8);
+    ctx.strokeStyle = '#13283b';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(ex, ey, largo, 8);
+    ctx.font = '500 18px "IBM Plex Sans", Arial, sans-serif';
+    ctx.fillStyle = '#13283b';
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'center';
+    ctx.fillText('0', ex, ey - 9);
+    ctx.fillText(`${metros} m`, ex + largo, ey - 9);
+
+    // Norte
+    const nx = ancho - 42, ny = 46;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
     ctx.beginPath();
-    ctx.arc(x, y, 9, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.arc(nx, ny, 32, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#13283b';
+    ctx.beginPath();
+    ctx.moveTo(nx, ny - 6);
+    ctx.lineTo(nx + 10, ny + 24);
+    ctx.lineTo(nx, ny + 17);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#7a8897';
+    ctx.beginPath();
+    ctx.moveTo(nx, ny - 6);
+    ctx.lineTo(nx - 10, ny + 24);
+    ctx.lineTo(nx, ny + 17);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#13283b';
+    ctx.font = '600 17px "IBM Plex Sans", Arial, sans-serif';
+    ctx.fillText('N', nx, ny - 11);
+
+    // Atribución
+    ctx.font = '14px "IBM Plex Sans", Arial, sans-serif';
+    ctx.textAlign = 'right';
+    const atribucion = '© OpenStreetMap';
+    const wa = ctx.measureText(atribucion).width + 12;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.fillRect(ancho - wa, alto - 22, wa, 22);
+    ctx.fillStyle = '#4b5966';
+    ctx.fillText(atribucion, ancho - 6, alto - 6);
+
+    try {
+        return canvas.toDataURL('image/jpeg', 0.9);
+    } catch (error) {
+        return null;  // teselas sin permiso CORS
+    }
+}
+
+// Imagen PNG de un SVG (el perfil de la ficha) para el PDF
+function svgAPng(svg, escala = 3) {
+    return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width * escala;
+            canvas.height = img.height * escala;
+            const ctx = canvas.getContext('2d');
+            ctx.scale(escala, escala);
+            ctx.drawImage(img, 0, 0);
+            resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => resolve(null);
+        img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    });
 }
 
 function hexToRgb(hex) {
@@ -1798,21 +2198,25 @@ function hexToRgb(hex) {
 
 // Texto apto para las fuentes estándar del PDF (sin caracteres fuera de Latin-1)
 function pdfTexto(t) {
-    return String(t ?? '').replace(/→/g, '->').replace(/[^\x00-\xFF]/g, '');
+    return String(t ?? '').replace(/→/g, '->').replace(/[−–]/g, '-').replace(/[^\x00-\xFF]/g, '');
+}
+
+// Bibliotecas que se descargan solo cuando se necesitan (jsPDF, supabase-js)
+const scriptsCargados = {};
+function cargarScript(url) {
+    scriptsCargados[url] ||= new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = url;
+        s.onload = resolve;
+        s.onerror = () => { delete scriptsCargados[url]; reject(new Error(`No se pudo cargar ${url}`)); };
+        document.head.appendChild(s);
+    });
+    return scriptsCargados[url];
 }
 
 // jsPDF se descarga solo la primera vez que se pide una ficha
-let promesaJsPDF = null;
 function cargarJsPDF() {
-    if (window.jspdf) return Promise.resolve();
-    promesaJsPDF ||= new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-        s.onload = resolve;
-        s.onerror = () => { promesaJsPDF = null; reject(new Error('No se pudo cargar jsPDF')); };
-        document.head.appendChild(s);
-    });
-    return promesaJsPDF;
+    return window.jspdf ? Promise.resolve() : cargarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
 }
 
 async function generarFichaPDF(reg) {
@@ -1886,9 +2290,11 @@ async function generarFichaPDF(reg) {
         const foto = def.foto ? def.foto(p) : null;
         const altoImg = 58;
         const anchoImg = (ancho - 6) / 2;
-        const [fotoB64, mapaB64] = await Promise.all([
+        const perfil = def.perfil ? svgPerfil(p, 320, 206) : null;
+        const [fotoB64, mapaB64, perfilB64] = await Promise.all([
             foto ? cargarImagenBase64(foto) : Promise.resolve(null),
-            generarMapaEstatico(centro.lat, centro.lng, reg.capa === 'canales' ? 16 : 18, 480, 340)
+            generarMapaUbicacion(reg, 960, 618),
+            perfil ? svgAPng(perfil) : Promise.resolve(null)
         ]);
 
         const recuadro = (x, etiquetaR, imagen, formato, vacio) => {
@@ -1913,14 +2319,14 @@ async function generarFichaPDF(reg) {
             doc.setTextColor(122, 136, 151);
             doc.text(vacio, x + anchoImg / 2, y + 2 + altoImg / 2, { align: 'center' });
         };
-        recuadro(m, 'FOTOGRAFÍA DE CAMPO', fotoB64, 'JPEG', foto ? 'Fotografía no disponible' : 'Sin fotografía registrada');
-        recuadro(m + anchoImg + 6, 'UBICACIÓN', mapaB64, 'PNG', 'Mapa no disponible');
+        if (def.perfil) recuadro(m, 'PERFIL LONGITUDINAL', perfilB64, 'PNG', 'Sin elevaciones para el perfil');
+        else recuadro(m, 'FOTOGRAFÍA DE CAMPO', fotoB64, 'JPEG', foto ? 'Fotografía no disponible' : 'Sin fotografía registrada');
+        recuadro(m + anchoImg + 6, 'UBICACIÓN', mapaB64, 'JPEG', 'Mapa no disponible');
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7);
         doc.setTextColor(122, 136, 151);
         const [ex, ny] = aUTM(centro.lat, centro.lng);
         doc.text(pdfTexto(`UTM 19S: E ${Math.round(ex)} · N ${Math.round(ny)} · Lat/Lon: ${centro.lat.toFixed(6)}, ${centro.lng.toFixed(6)}`), m + anchoImg + 6, y + altoImg + 6);
-        doc.text('Mapa base: © OpenStreetMap', m, y + altoImg + 6);
         y += altoImg + 13;
 
         // Atributos en dos columnas: cada sección es un bloque con su título
