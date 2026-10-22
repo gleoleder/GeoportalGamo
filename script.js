@@ -1,80 +1,223 @@
-// Variables globales
+// =====================================================================
+// Geoportal del drenaje mixto del Casco Viejo de Oruro
+// Lee la base PostGIS del proyecto (Supabase, función geoportal_datos)
+// o, sin conexión, la copia local datos.geojson.
+// =====================================================================
+
 let map;
-let capaActual = null;
 let userLocation = null;
-let routeLayers = []; // Array para múltiples rutas
+let routeLayers = [];
 let origenMarker = null;
 let destinoMarker = null;
 let seleccionandoPunto = null;
-let currentRoutes = []; // Array para guardar múltiples rutas
-let lineasFlujo = []; // Líneas animadas de flujo de agua en tuberías
+let currentRoutes = [];
+let lineasFlujo = [];
+let flujoActivo = true;
+let resumenDatos = null;
+let fuenteDatos = '';
 
-// Anima el desplazamiento de los guiones para simular el flujo de agua
-function animarFlujo() {
-    const offset = -(performance.now() / 50) % 18; // velocidad del flujo
-    lineasFlujo.forEach(linea => {
-        const path = linea._path;
-        if (path) path.setAttribute('stroke-dashoffset', offset);
-    });
-    requestAnimationFrame(animarFlujo);
+// ---------------------------------------------------------------------
+// Paleta y temas de simbolización
+// ---------------------------------------------------------------------
+const SIN_DATO = '#aab4be';
+const ESTADO = [
+    ['BUENO', 'Bueno', '#2f7d5c'],
+    ['REGULAR', 'Regular', '#c39233'],
+    ['MALO', 'Malo', '#a8423a']
+];
+const CONDICION = [
+    ['LIMPIO', 'Limpio', '#2f7d5c'],
+    ['SEDIMENTADO', 'Sedimentado', '#c39233'],
+    ['COLMATADO', 'Colmatado', '#a8423a'],
+    ['OBSTRUIDO', 'Obstruido', '#6e2a33']
+];
+const CERTEZA = [
+    ['CONFIRMADO', 'Confirmado', '#1d5a85'],
+    ['PROBABLE', 'Probable', '#5f93bd'],
+    ['INFERIDO', 'Inferido', '#a9bfd3'],
+    ['NO DETERMINADO', 'No determinado', '#d3dbe3']
+];
+const ACCESIBILIDAD = [
+    ['ACCESIBLE OPERATIVO', 'Accesible operativa', '#2f7d5c'],
+    ['ACCESIBLE CON DIFICULTAD', 'Accesible con dificultad', '#c39233'],
+    ['NO ACCESIBLE', 'No accesible', '#a8423a'],
+    ['INFERIDO', 'Inferida', '#7f8b97']
+];
+
+const TEMAS = {
+    camaras: {
+        accesibilidad: { titulo: 'Accesibilidad', clases: ACCESIBILIDAD },
+        estado_fisico: { titulo: 'Estado físico', clases: ESTADO },
+        funcionamiento_drenaje: { titulo: 'Funcionamiento del drenaje', clases: ESTADO },
+        condicion_interior: { titulo: 'Condición interior', clases: CONDICION },
+        nivel_certeza: { titulo: 'Nivel de certeza', clases: CERTEZA }
+    },
+    sumideros: {
+        condicion: { titulo: 'Condición de funcionamiento', clases: CONDICION },
+        estado_estructura: { titulo: 'Estado de la estructura', clases: ESTADO },
+        estado_rejilla: { titulo: 'Estado de la rejilla', clases: ESTADO },
+        nivel_certeza: { titulo: 'Nivel de certeza', clases: CERTEZA }
+    },
+    progresivas: {
+        estado_estructural: { titulo: 'Estado estructural', clases: ESTADO },
+        nivel_certeza: { titulo: 'Nivel de certeza', clases: CERTEZA }
+    }
+};
+
+const CAPAS = {
+    camaras: { nombre: 'Cámaras de inspección', grupo: 'Red de drenaje', tipo: 'punto', tema: 'accesibilidad', pane: 'pCamaras' },
+    sumideros: { nombre: 'Sumideros', grupo: 'Red de drenaje', tipo: 'punto', tema: 'condicion', pane: 'pSumideros' },
+    tuberias_camaras: { nombre: 'Tuberías de cámaras', grupo: 'Red de drenaje', tipo: 'linea', pane: 'pTuberias', color: '#24577a' },
+    tuberias_sumideros: { nombre: 'Tuberías de sumideros', grupo: 'Red de drenaje', tipo: 'linea', pane: 'pTuberias', color: '#5c9bc8' },
+    canales: { nombre: 'Ejes de canales', grupo: 'Canales', tipo: 'linea', pane: 'pCanales', color: '#127369' },
+    progresivas: { nombre: 'Secciones levantadas', grupo: 'Canales', tipo: 'punto', tema: 'estado_estructural', pane: 'pProgresivas', zoomMin: 16 },
+    area: { nombre: 'Área de estudio', grupo: 'Referencia', tipo: 'poligono', pane: 'pArea', color: '#13283b' }
+};
+const ORDEN_PANEL = ['camaras', 'sumideros', 'tuberias_camaras', 'tuberias_sumideros', 'canales', 'progresivas', 'area'];
+
+// Registro de entidades por capa: { props, capa, layer, latlng }
+const registro = {};
+const grupos = {};
+const visibles = {};
+
+// ---------------------------------------------------------------------
+// Utilidades de formato
+// ---------------------------------------------------------------------
+const NOMBRES_CANAL = {
+    'ZANJA DE CORONACION': 'Zanja de coronación',
+    'AV. MONTES Y AV. PANORAMICA': 'Av. Montes y Av. Panorámica',
+    'AV. SAN JOSE': 'Av. San José',
+    'AV. TTE. LEON': 'Av. Tte. León',
+    '6 DE OCTUBRE': '6 de Octubre',
+    'AV. HEROES DEL CHACO': 'Av. Héroes del Chaco',
+    '1 DE NOVIEMBRE': '1 de Noviembre',
+    'AV. VILLARROEL': 'Av. Villarroel',
+    'SGTO. FLORES': 'Sgto. Flores',
+    'CAMINO A LA VIRGEN': 'Camino a la Virgen',
+    'CANAL VELASCO GALVARRO': 'Velasco Galvarro'
+};
+
+const ETIQUETAS = {
+    'MIXTO': 'Mixto (pluvial y sanitario)',
+    'VIA': 'Vía',
+    'ADOQUIN': 'Adoquín',
+    'HORMIGON': 'Hormigón',
+    'HORMIGON CICLOPEO': 'Hormigón ciclópeo',
+    'HORMIGON ARMADO': 'Hormigón armado',
+    'METALICO': 'Metálico',
+    'NINGUNA': 'Ninguna',
+    'GEOMETRIA': 'Por conexión geométrica',
+    'CODIGO': 'Por código de campo',
+    'SIN RESOLVER': 'Sin resolver',
+    'CAMARA': 'Cámara de inspección',
+    'SUMIDERO': 'Sumidero',
+    'TUBERIA': 'Tubería de cámara',
+    'CANAL': 'Canal',
+    'RED': 'Red principal (sin identificar)',
+    'NO RESUELTO': 'Sin determinar',
+    'OBSERVADA': 'Observada directamente',
+    'ESTIMADA': 'Estimada (sin acceso al interior)',
+    'OTRA': 'Otra codificación'
+};
+
+function esc(v) {
+    return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-requestAnimationFrame(animarFlujo);
 
-// Función para convertir URLs de Google Drive a URLs de imagen directa
+function nombreCanal(v) {
+    return NOMBRES_CANAL[v] || v;
+}
+
+function etiqueta(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const s = String(v);
+    if (ETIQUETAS[s]) return ETIQUETAS[s];
+    if (NOMBRES_CANAL[s]) return NOMBRES_CANAL[s];
+    for (const tema of [ESTADO, CONDICION, CERTEZA, ACCESIBILIDAD]) {
+        const c = tema.find(([valor]) => valor === s);
+        if (c) return c[1];
+    }
+    const t = s.toLowerCase();
+    return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function numero(v, decimales = 2) {
+    if (v === null || v === undefined || v === '' || isNaN(v)) return null;
+    return Number(v).toLocaleString('es-BO', { minimumFractionDigits: decimales, maximumFractionDigits: decimales });
+}
+
+function conUnidad(v, unidad, decimales = 2) {
+    const n = numero(v, decimales);
+    return n === null ? null : `${n} ${unidad}`;
+}
+
+function siNo(v) {
+    if (v === true) return 'Sí';
+    if (v === false) return 'No';
+    return null;
+}
+
+function fecha(v) {
+    if (!v) return null;
+    const [a, m, d] = String(v).split('-');
+    return d ? `${d}/${m}/${a}` : v;
+}
+
+function conCanales(texto) {
+    if (!texto) return null;
+    return Object.entries(NOMBRES_CANAL).reduce((t, [k, nombre]) => t.split(k).join(nombre), String(texto));
+}
+
+function colorTema(capa, props, tema) {
+    const def = TEMAS[capa]?.[tema || CAPAS[capa].tema];
+    if (!def) return CAPAS[capa].color || SIN_DATO;
+    const c = def.clases.find(([valor]) => valor === props[tema || CAPAS[capa].tema]);
+    return c ? c[2] : SIN_DATO;
+}
+
+function colorDe(clases, valor) {
+    const c = clases.find(([v]) => v === valor);
+    return c ? c[2] : SIN_DATO;
+}
+
+// Conversión de WGS 84 a UTM (zona 19 Sur) para la lectura de coordenadas
+function aUTM(lat, lon, zona = 19) {
+    const a = 6378137, f = 1 / 298.257223563, k0 = 0.9996;
+    const e2 = f * (2 - f), ep2 = e2 / (1 - e2);
+    const phi = lat * Math.PI / 180, lam = lon * Math.PI / 180;
+    const lam0 = ((zona - 1) * 6 - 180 + 3) * Math.PI / 180;
+    const N = a / Math.sqrt(1 - e2 * Math.sin(phi) ** 2);
+    const T = Math.tan(phi) ** 2, C = ep2 * Math.cos(phi) ** 2, A = Math.cos(phi) * (lam - lam0);
+    const M = a * ((1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256) * phi
+        - (3 * e2 / 8 + 3 * e2 ** 2 / 32 + 45 * e2 ** 3 / 1024) * Math.sin(2 * phi)
+        + (15 * e2 ** 2 / 256 + 45 * e2 ** 3 / 1024) * Math.sin(4 * phi)
+        - (35 * e2 ** 3 / 3072) * Math.sin(6 * phi));
+    const x = k0 * N * (A + (1 - T + C) * A ** 3 / 6 + (5 - 18 * T + T ** 2 + 72 * C - 58 * ep2) * A ** 5 / 120) + 500000;
+    let y = k0 * (M + N * Math.tan(phi) * (A ** 2 / 2 + (5 - T + 9 * C + 4 * C ** 2) * A ** 4 / 24
+        + (61 - 58 * T + T ** 2 + 600 * C - 330 * ep2) * A ** 6 / 720));
+    if (lat < 0) y += 10000000;
+    return [x, y];
+}
+
+// ---------------------------------------------------------------------
+// Fotografías de Google Drive
+// ---------------------------------------------------------------------
 function convertDriveUrl(url) {
-    if (!url || typeof url !== 'string') return url;
-    
-    let fileId = null;
-    
-    // Patrón 1: https://drive.google.com/file/d/FILE_ID/view...
-    let match = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
-    if (match) {
-        fileId = match[1];
-    }
-    
-    // Patrón 2: https://drive.google.com/open?id=FILE_ID
-    if (!fileId) {
-        match = url.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/);
-        if (match) {
-            fileId = match[1];
-        }
-    }
-    
-    // Patrón 3: id=FILE_ID en cualquier parte de la URL (funciona para uc?export=download&id=XXX)
-    if (!fileId) {
-        match = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-        if (match) {
-            fileId = match[1];
-        }
-    }
-    
-    // Patrón 4: ID directo (solo letras, números, guiones y guiones bajos, min 20 chars)
-    if (!fileId && /^[a-zA-Z0-9_-]{20,}$/.test(url.trim())) {
-        fileId = url.trim();
-    }
-    
-    // Si encontramos un ID, devolver URL de imagen directa
-    if (fileId) {
-        // googleusercontent es el host más fiable para incrustar <img> (sin límites de cuota de Drive)
-        return `https://lh3.googleusercontent.com/d/${fileId}=w1000`;
-    }
-
-    // Si no coincide con ningún patrón de Drive, devolver URL original
-    return url;
+    const id = extraerDriveId(url);
+    return id ? `https://lh3.googleusercontent.com/d/${id}=w1000` : url;
 }
 
-// Extrae el ID de Google Drive de cualquier formato de URL
 function extraerDriveId(url) {
     if (!url || typeof url !== 'string') return null;
-    let m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) ||
-            url.match(/[?&]id=([a-zA-Z0-9_-]+)/) ||
-            url.match(/googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/);
+    const m = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) ||
+        url.match(/[?&]id=([a-zA-Z0-9_-]+)/) ||
+        url.match(/googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/);
     if (m) return m[1];
     if (/^[a-zA-Z0-9_-]{20,}$/.test(url.trim())) return url.trim();
     return null;
 }
 
-// Lista de URLs candidatas para una foto de Drive (se prueban en cascada)
+// URLs candidatas para una foto de Drive (se prueban en cascada)
 function urlsFotoDrive(url) {
     const id = extraerDriveId(url);
     if (!id) return [url];
@@ -85,216 +228,213 @@ function urlsFotoDrive(url) {
     ];
 }
 
-// Iconos personalizados para marcadores de ruta
-const origenIcon = L.divIcon({
-    className: 'route-marker',
-    html: '<div style="background: #28a745; color: white; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(0,0,0,0.3); font-size: 18px;">📍</div>',
-    iconSize: [36, 36],
-    iconAnchor: [18, 18]
-});
+// ---------------------------------------------------------------------
+// Símbolos
+// ---------------------------------------------------------------------
+const cacheIconos = {};
 
-const destinoIcon = L.divIcon({
-    className: 'route-marker',
-    html: '<div style="background: #dc3545; color: white; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 10px rgba(0,0,0,0.3); font-size: 18px;">🏁</div>',
-    iconSize: [36, 36],
-    iconAnchor: [18, 18]
-});
+function svgCamara(color, t = 26) {
+    return `<svg width="${t}" height="${t}" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="13.5" fill="#fff" stroke="#22303d" stroke-width="2"/>
+        <circle cx="16" cy="16" r="9.6" fill="${color}"/>
+        <path d="M10.6 12.8h10.8M10.6 16h10.8M10.6 19.2h10.8" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+}
 
-// Inicializar mapa
+function svgSumidero(color, t = 21) {
+    return `<svg width="${t}" height="${t}" viewBox="0 0 28 28" aria-hidden="true">
+        <rect x="2.5" y="2.5" width="23" height="23" rx="3" fill="#fff" stroke="#22303d" stroke-width="2"/>
+        <rect x="6" y="6" width="16" height="16" rx="1.5" fill="${color}"/>
+        <path d="M10.3 7.6v12.8M14 7.6v12.8M17.7 7.6v12.8" stroke="#fff" stroke-width="1.5"/></svg>`;
+}
+
+function svgProgresiva(color, t = 15) {
+    return `<svg width="${t}" height="${t}" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="3.2" y="3.2" width="9.6" height="9.6" transform="rotate(45 8 8)" fill="${color}" stroke="#fff" stroke-width="1.6"/></svg>`;
+}
+
+function svgLinea(color, grosor = 3, discontinua = false, casco = false) {
+    return `<svg width="22" height="12" viewBox="0 0 22 12" aria-hidden="true">
+        ${casco ? `<line x1="1" y1="6" x2="21" y2="6" stroke="#fff" stroke-width="${grosor + 3}"/>` : ''}
+        <line x1="1" y1="6" x2="21" y2="6" stroke="${color}" stroke-width="${grosor}" ${discontinua ? 'stroke-dasharray="4 3"' : ''}/></svg>`;
+}
+
+function svgArea() {
+    return `<svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true">
+        <rect x="2" y="2" width="18" height="12" fill="rgba(19,40,59,0.05)" stroke="#13283b" stroke-width="1.6" stroke-dasharray="4 2.5"/></svg>`;
+}
+
+function icono(capa, color) {
+    const clave = `${capa}|${color}`;
+    if (!cacheIconos[clave]) {
+        const def = {
+            camaras: [svgCamara(color), 26],
+            sumideros: [svgSumidero(color), 21],
+            progresivas: [svgProgresiva(color), 15]
+        }[capa];
+        cacheIconos[clave] = L.divIcon({
+            className: 'mk',
+            html: def[0],
+            iconSize: [def[1], def[1]],
+            iconAnchor: [def[1] / 2, def[1] / 2],
+            popupAnchor: [0, -def[1] / 2]
+        });
+    }
+    return cacheIconos[clave];
+}
+
+function simboloCapa(capa, color) {
+    switch (capa) {
+        case 'camaras': return svgCamara(color || '#2f7d5c', 20);
+        case 'sumideros': return svgSumidero(color || '#c39233', 17);
+        case 'progresivas': return svgProgresiva(color || '#c39233', 14);
+        case 'canales': return svgLinea(CAPAS.canales.color, 4, false, true);
+        case 'area': return svgArea();
+        default: return svgLinea(CAPAS[capa].color, 3);
+    }
+}
+
+function esInferida(props) {
+    return props.nivel_certeza === 'INFERIDO' || props.nivel_certeza === 'NO DETERMINADO';
+}
+
+function grosorTuberia(props) {
+    const d = Number(props.diametro_pulg);
+    return d > 0 ? Math.max(2, Math.min(7, 1.4 + d * 0.32)) : 2.2;
+}
+
+// ---------------------------------------------------------------------
+// Mapa
+// ---------------------------------------------------------------------
+const MAPAS_BASE = {
+    gris: {
+        nombre: 'Calles (gris)',
+        capa: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap', maxZoom: 22, maxNativeZoom: 19, className: 'base-gris'
+        })
+    },
+    calles: {
+        nombre: 'Calles',
+        capa: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap', maxZoom: 22, maxNativeZoom: 19
+        })
+    },
+    satelite: {
+        nombre: 'Satélite',
+        capa: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: '© Esri, Maxar', maxZoom: 22, maxNativeZoom: 19
+        })
+    },
+    topo: {
+        nombre: 'Topográfico',
+        capa: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+            attribution: '© Esri', maxZoom: 22, maxNativeZoom: 19
+        })
+    }
+};
+let baseActual = null;
+
 function initMap() {
-    // Crear mapa centrado en Oruro, Bolivia
-    map = L.map('map', { maxZoom: 22 }).setView([-17.9647, -67.1064], 14);
-    
-    // Capa base de OpenStreetMap
-    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 22,
-        maxNativeZoom: 19
+    map = L.map('map', { maxZoom: 22, zoomSnap: 0.25, zoomControl: false }).setView([-17.9647, -67.1064], 15);
+
+    // Orden de dibujo: área, canales, tuberías, flujo, secciones, sumideros, cámaras
+    [['pArea', 380], ['pCanales', 400], ['pTuberias', 410], ['pFlujo', 415],
+     ['pProgresivas', 620], ['pSumideros', 630], ['pCamaras', 640]].forEach(([n, z]) => {
+        map.createPane(n).style.zIndex = z;
     });
-    
-    // Capa de satélite de Esri
-    const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        attribution: '© Esri',
-        maxZoom: 22,
-        maxNativeZoom: 19
-    });
-    
-    // Capa de Google Satellite
-    const googleSatellite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-        attribution: '© Google',
-        maxZoom: 22,
-        maxNativeZoom: 20
-    });
-    
-    // Capa de Google Hybrid (Satélite + Calles)
-    const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
-        attribution: '© Google',
-        maxZoom: 22,
-        maxNativeZoom: 20
-    });
-    
-    // Capa de Google Streets
-    const googleStreets = L.tileLayer('https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
-        attribution: '© Google',
-        maxZoom: 22,
-        maxNativeZoom: 20
-    });
-    
-    // Capa de Google Terrain
-    const googleTerrain = L.tileLayer('https://mt1.google.com/vt/lyrs=p&x={x}&y={y}&z={z}', {
-        attribution: '© Google',
-        maxZoom: 22,
-        maxNativeZoom: 20
-    });
-    
-    // Capa topográfica de OpenTopoMap
-    const topoLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenTopoMap',
-        maxZoom: 22,
-        maxNativeZoom: 17
-    });
-    
-    // Capa oscura de CartoDB
-    const darkLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© CartoDB',
-        maxZoom: 22,
-        maxNativeZoom: 19
-    });
-    
-    // Capa clara de CartoDB
-    const lightLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© CartoDB',
-        maxZoom: 22,
-        maxNativeZoom: 19
-    });
-    
-    // Capa de Esri Topográfico
-    const esriTopo = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
-        attribution: '© Esri',
-        maxZoom: 22,
-        maxNativeZoom: 19
-    });
-    
-    // Capa de Esri Calles
-    const esriStreets = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-        attribution: '© Esri',
-        maxZoom: 22,
-        maxNativeZoom: 19
-    });
-    
-    // Añadir capa base por defecto (modo oscuro)
-    darkLayer.addTo(map);
-    
-    // Control de capas
-    const baseLayers = {
-        "🗺️ OpenStreetMap": osmLayer,
-        "🛰️ Esri Satélite": satelliteLayer,
-        "🛰️ Google Satélite": googleSatellite,
-        "🗺️ Google Híbrido": googleHybrid,
-        "🛣️ Google Calles": googleStreets,
-        "⛰️ Google Terreno": googleTerrain,
-        "🏔️ OpenTopoMap": topoLayer,
-        "🌙 Modo Oscuro": darkLayer,
-        "☀️ Modo Claro": lightLayer,
-        "🗻 Esri Topográfico": esriTopo,
-        "🛤️ Esri Calles": esriStreets
-    };
-    
-    L.control.layers(baseLayers).addTo(map);
-    
-    // Inicializar paneles en móvil
-    initPanels();
-    
-    // Event listener para selección de puntos en el mapa
-    map.on('click', function(e) {
-        if (seleccionandoPunto) {
-            agregarPuntoSeleccionado(e.latlng);
+    map.getPane('pFlujo').style.pointerEvents = 'none';
+
+    L.control.zoom({ position: 'topright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
+    agregarControles();
+    L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 140 }).addTo(map);
+    cambiarMapaBase('gris');
+
+    map.on('zoomend', actualizarZoom);
+    actualizarZoom();
+    map.on('click', e => { if (seleccionandoPunto) agregarPuntoSeleccionado(e.latlng); });
+    map.on('popupopen', e => prepararFicha(e.popup));
+}
+
+function agregarControles() {
+    const Botones = L.Control.extend({
+        options: { position: 'topright' },
+        onAdd() {
+            const div = L.DomUtil.create('div', 'leaflet-bar');
+            div.innerHTML = `
+                <button type="button" class="control-boton" data-c="general" title="Vista general" aria-label="Vista general">
+                    <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+                <button type="button" class="control-boton" data-c="ubicacion" title="Mi ubicación" aria-label="Mi ubicación">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7.5"/></svg></button>`;
+            L.DomEvent.disableClickPropagation(div);
+            div.addEventListener('click', e => {
+                const b = e.target.closest('[data-c]');
+                if (!b) return;
+                if (b.dataset.c === 'general') vistaGeneral();
+                if (b.dataset.c === 'ubicacion') obtenerUbicacion();
+            });
+            return div;
         }
     });
+    new Botones().addTo(map);
+
+    const Norte = L.Control.extend({
+        options: { position: 'topright' },
+        onAdd() {
+            const div = L.DomUtil.create('div', 'norte');
+            div.title = 'Norte';
+            div.innerHTML = `<svg width="20" height="34" viewBox="0 0 20 34" aria-label="Norte">
+                <text x="10" y="10" text-anchor="middle" font-size="10" font-weight="600" fill="#16222e" font-family="IBM Plex Sans, sans-serif">N</text>
+                <path d="M10 13 L15 31 L10 27 L5 31 Z" fill="#16222e"/><path d="M10 13 L10 27 L5 31 Z" fill="#7a8897"/></svg>`;
+            return div;
+        }
+    });
+    new Norte().addTo(map);
+
+    const Coordenadas = L.Control.extend({
+        options: { position: 'bottomright' },
+        onAdd() {
+            const div = L.DomUtil.create('div', 'coords');
+            div.textContent = 'UTM 19S';
+            map.on('mousemove', e => {
+                const [x, y] = aUTM(e.latlng.lat, e.latlng.lng);
+                div.textContent = `UTM 19S  E ${Math.round(x).toLocaleString('es-BO')}  N ${Math.round(y).toLocaleString('es-BO')}`;
+            });
+            return div;
+        }
+    });
+    new Coordenadas().addTo(map);
 }
 
-// Función de estilo para cámaras basado en campo "accesibili"
-function getStyle(feature) {
-    const accesibili = feature.properties?.accesibili?.toLowerCase() || 'otro';
-    
-    const estilos = {
-        'accesible operativo': { color: '#28a745', fillColor: '#28a745' },
-        'accesible con dificultad': { color: '#ffc107', fillColor: '#ffc107' },
-        'inferido': { color: '#6c757d', fillColor: '#6c757d' },
-        'no accesible': { color: '#dc3545', fillColor: '#dc3545' }
-    };
-    
-    return {
-        radius: 8,
-        fillColor: estilos[accesibili]?.fillColor || '#17a2b8',
-        color: estilos[accesibili]?.color || '#17a2b8',
-        weight: 2,
-        opacity: 1,
-        fillOpacity: 0.8
-    };
+function actualizarZoom() {
+    const z = map.getZoom();
+    const el = map.getContainer();
+    el.classList.toggle('z-muy-lejos', z < 15);
+    el.classList.toggle('z-lejos', z >= 15 && z < 16);
+    el.classList.toggle('z-medio', z >= 16 && z < 18);
+    // Las secciones de canal solo se muestran de cerca
+    if (grupos.progresivas) {
+        const debe = visibles.progresivas && z >= CAPAS.progresivas.zoomMin;
+        if (debe && !map.hasLayer(grupos.progresivas)) grupos.progresivas.addTo(map);
+        if (!debe && map.hasLayer(grupos.progresivas)) map.removeLayer(grupos.progresivas);
+    }
 }
 
-// Crear icono SVG para marcadores basado en campo "accesibili"
-function createCustomIcon(accesibili) {
-    const colorMap = {
-        'accesible operativo': '#28a745',
-        'accesible con dificultad': '#ffc107',
-        'inferido': '#6c757d',
-        'no accesible': '#dc3545'
-    };
-    
-    const color = colorMap[accesibili?.toLowerCase()] || '#17a2b8';
-    
-    return L.divIcon({
-        className: 'custom-marker',
-        html: `
-            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <circle cx="16" cy="16" r="9.5" fill="none" stroke="${color}" stroke-width="2"/>
-                <g transform="translate(16, 16)">
-                    <rect x="-6" y="-3" width="4.5" height="1.5" fill="${color}" rx="0.5"/>
-                    <rect x="1.5" y="-3" width="4.5" height="1.5" fill="${color}" rx="0.5"/>
-                    <rect x="-6" y="0" width="4.5" height="1.5" fill="${color}" rx="0.5"/>
-                    <rect x="1.5" y="0" width="4.5" height="1.5" fill="${color}" rx="0.5"/>
-                    <rect x="-6" y="3" width="4.5" height="1.5" fill="${color}" rx="0.5"/>
-                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="${color}" rx="0.5"/>
-                </g>
-            </svg>
-        `,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
-        popupAnchor: [0, -16]
+function cambiarMapaBase(clave) {
+    if (baseActual) map.removeLayer(baseActual);
+    baseActual = MAPAS_BASE[clave].capa().addTo(map);
+    baseActual.bringToBack();
+    document.querySelectorAll('#mapasBase button').forEach(b => {
+        b.setAttribute('aria-checked', String(b.dataset.base === clave));
     });
 }
 
-// Estilos por color de las líneas de tuberías
-const ESTILO_TUBERIAS = {
-    'tuberias_camaras': { color: '#1f78b4', weight: 3 },
-    'tuberias_sumideros': { color: '#7fd4f5', weight: 3 }
-};
-
-// Icono propio para sumideros: cuadrado azul con rejilla (boca de tormenta)
-function createSumideroIcon() {
-    const color = '#0077b6';
-    return L.divIcon({
-        className: 'custom-marker',
-        html: `
-            <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="3" width="22" height="22" rx="3" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <rect x="6" y="6" width="16" height="16" rx="2" fill="none" stroke="${color}" stroke-width="2"/>
-                <line x1="10" y1="7" x2="10" y2="21" stroke="${color}" stroke-width="1.6"/>
-                <line x1="14" y1="7" x2="14" y2="21" stroke="${color}" stroke-width="1.6"/>
-                <line x1="18" y1="7" x2="18" y2="21" stroke="${color}" stroke-width="1.6"/>
-            </svg>
-        `,
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-        popupAnchor: [0, -14]
-    });
+function vistaGeneral() {
+    const area = registro.area?.[0];
+    if (area) map.fitBounds(area.layer.getBounds(), { padding: [24, 24] });
 }
 
-// Leer las capas desde Supabase (función geoportal_capas) o, si no hay
-// configuración o falla la conexión, desde datos.geojson
+// ---------------------------------------------------------------------
+// Carga de datos
+// ---------------------------------------------------------------------
 async function obtenerGeojson() {
     const cfg = window.GEOPORTAL_CONFIG || {};
     if (cfg.supabaseUrl && cfg.supabaseAnonKey) {
@@ -302,12 +442,13 @@ async function obtenerGeojson() {
             const headers = { apikey: cfg.supabaseAnonKey, 'Content-Type': 'application/json' };
             // Las claves anon antiguas son JWT y también van en Authorization
             if (cfg.supabaseAnonKey.startsWith('eyJ')) headers.Authorization = `Bearer ${cfg.supabaseAnonKey}`;
-            const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_capas`, {
-                method: 'POST',
-                headers,
-                body: '{}'
+            const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_datos`, {
+                method: 'POST', headers, body: '{}'
             });
-            if (response.ok) return await response.json();
+            if (response.ok) {
+                fuenteDatos = 'supabase';
+                return await response.json();
+            }
             console.warn('Supabase respondió', response.status, '— se usa datos.geojson');
         } catch (error) {
             console.warn('No se pudo leer Supabase — se usa datos.geojson:', error);
@@ -315,1301 +456,1222 @@ async function obtenerGeojson() {
     }
     const response = await fetch('datos.geojson');
     if (!response.ok) throw new Error('No se pudo leer datos.geojson');
+    fuenteDatos = 'local';
     return response.json();
 }
 
-// Cargar las capas del sistema de drenaje
-async function cargarCapa() {
-    mostrarEstado('Cargando datos...', 'info');
+function estadoDatos(clase, texto) {
+    const el = document.getElementById('estadoDatos');
+    el.className = `barra__estado ${clase}`;
+    el.querySelector('.texto').textContent = texto;
+    el.title = texto;
+}
 
+async function cargarCapa() {
     try {
         const geojson = await obtenerGeojson();
-        const data = geojson.features || [];
+        resumenDatos = geojson.resumen || null;
+        const features = geojson.features || [];
+        if (!features.length) throw new Error('La fuente de datos no tiene elementos');
 
-        if (data.length === 0) {
-            mostrarEstado('No se encontraron datos para mostrar', 'error');
-            return;
-        }
+        ORDEN_PANEL.forEach(c => { registro[c] = []; visibles[c] = true; });
+        features.forEach(f => {
+            const capa = f.properties?._capa;
+            if (CAPAS[capa] && f.geometry) registro[capa].push({ capa, props: f.properties, geometry: f.geometry });
+        });
 
-        // Limpiar capas anteriores
-        if (capaActual) {
-            map.removeLayer(capaActual);
-        }
-        lineasFlujo = [];
-        if (window.controlCapas) {
-            map.removeControl(window.controlCapas);
-            window.controlCapas = null;
-        }
+        ORDEN_PANEL.forEach(construirCapa);
+        construirPanelCapas();
+        construirResumen();
+        actualizarZoom();
+        vistaGeneral();
 
-        // 4 grupos independientes que se pueden prender/apagar
-        const grupos = {
-            camaras: L.featureGroup(),
-            sumideros: L.featureGroup(),
-            tuberias_camaras: L.featureGroup(),
-            tuberias_sumideros: L.featureGroup()
-        };
+        estadoDatos(fuenteDatos === 'supabase' ? 'conectado' : 'local',
+            fuenteDatos === 'supabase' ? 'Base PostGIS en línea' : 'Copia local de los datos');
+    } catch (error) {
+        console.error(error);
+        estadoDatos('fallo', 'Sin datos');
+        document.getElementById('listaCapas').innerHTML =
+            `<p class="ayuda">No se pudieron cargar los datos (${esc(error.message)}). Recargue la página para intentarlo de nuevo.</p>`;
+        aviso('No se pudieron cargar los datos del geoportal.', 'error');
+    }
+}
 
-        // capaActual agrupa todo solo para getBounds y limpieza
-        capaActual = L.featureGroup(Object.values(grupos));
+function construirCapa(capa) {
+    const def = CAPAS[capa];
+    const grupo = L.featureGroup();
+    grupos[capa] = grupo;
 
-        let puntoNumero = 0; // Contador de puntos
-
-        data.forEach(feature => {
-            const geom = feature.geometry;
-            if (!geom) return;
-            const p = feature.properties || {};
-            const capa = p._capa;
-
-            // ---- Tuberías (líneas) ----
-            if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
-                const estilo = ESTILO_TUBERIAS[capa] || { color: '#888', weight: 3 };
-                const grupoDestino = grupos[capa] || capaActual;
-                const latlngs = geom.type === 'MultiLineString'
-                    ? geom.coordinates.map(l => l.map(c => [c[1], c[0]]))
-                    : geom.coordinates.map(c => [c[1], c[0]]);
-
-                // Grosor de la línea según el diámetro de la tubería (pulgadas)
-                const diam = parseFloat(String(p.DIAMETRO__ ?? p['DIAMETRO ('] ?? '').replace(',', '.'));
-                const grosor = (!isNaN(diam) && diam > 0)
-                    ? Math.max(2, Math.min(10, 2 + diam * 0.25))  // 2px (chica) … 10px (grande)
-                    : 2.5;                                         // sin dato de diámetro
-
-                // Línea base (tubería)
-                const linea = L.polyline(latlngs, { color: estilo.color, weight: grosor, opacity: 0.85 });
-                linea.addTo(grupoDestino);
-
-                // Línea de animación de flujo de agua (encima, con guiones que se desplazan)
-                const flujo = L.polyline(latlngs, {
-                    color: '#01337d',
-                    weight: Math.max(2, grosor - 1),
+    registro[capa].forEach(reg => {
+        const p = reg.props;
+        let layer;
+        if (def.tipo === 'punto') {
+            const [lon, lat] = reg.geometry.coordinates;
+            reg.latlng = L.latLng(lat, lon);
+            layer = L.marker(reg.latlng, {
+                icon: icono(capa, colorTema(capa, p)),
+                pane: def.pane,
+                keyboard: false,
+                title: p.codigo
+            });
+        } else if (capa === 'area') {
+            layer = L.geoJSON(reg.geometry, {
+                pane: def.pane,
+                interactive: false,
+                style: { color: def.color, weight: 2, dashArray: '10 6', fillColor: def.color, fillOpacity: 0.035 }
+            });
+        } else if (capa === 'canales') {
+            const casco = L.geoJSON(reg.geometry, { pane: def.pane, style: { color: '#ffffff', weight: 8, opacity: 0.9 } });
+            const eje = L.geoJSON(reg.geometry, { pane: def.pane, style: { color: def.color, weight: 4.5, opacity: 1 } });
+            layer = L.featureGroup([casco, eje]);
+        } else {
+            layer = L.geoJSON(reg.geometry, {
+                pane: def.pane,
+                style: {
+                    color: def.color,
+                    weight: capa === 'tuberias_camaras' ? grosorTuberia(p) : 2.2,
                     opacity: 0.95,
-                    dashArray: '2, 16',
-                    lineCap: 'round'
-                });
-                flujo.addTo(grupoDestino);
-                lineasFlujo.push(flujo);
-
-                const cod = p.COD_TCAM || p.COD_TSUM || '';
-                let popLinea = `<div class="popup-scroll-container"><div class="popup-title" style="background:${estilo.color};">🔧 Tubería ${cod}</div>`;
-                if (p.ORIGEN || p.DESTINO) {
-                    popLinea += `<div class="popup-row"><span class="popup-label">Flujo:</span><span class="popup-value">${p.ORIGEN || '?'} ➜ ${p.DESTINO || '?'}</span></div>`;
+                    dashArray: esInferida(p) ? '7 5' : null
                 }
-                [['Función', p.FUNCION], ['Material', p.MATERIAL], ['Diámetro', p.DIAMETRO__ || p['DIAMETRO (']], ['Distancia', p.DISTANCIA], ['Pendiente', p.PENDIENTE]].forEach(([l, v]) => {
-                    if (v !== null && v !== undefined && v !== '') popLinea += `<div class="popup-row"><span class="popup-label">${l}:</span><span class="popup-value">${v}</span></div>`;
-                });
-                popLinea += '</div>';
-                linea.bindPopup(popLinea);
-                return;
+            });
+            const flujo = L.geoJSON(reg.geometry, {
+                pane: 'pFlujo',
+                interactive: false,
+                style: { color: '#ffffff', weight: 1.6, opacity: 0.9, dashArray: '2 14', lineCap: 'round' }
+            });
+            reg.flujo = flujo;
+        }
+
+        if (capa !== 'area') {
+            layer.bindPopup(() => htmlFicha(reg), { className: 'ficha', maxWidth: 400, minWidth: 280, autoPanPadding: [40, 40] });
+            if (def.tipo === 'linea') {
+                layer.bindTooltip(capa === 'canales' ? nombreCanal(p.nombre) : p.codigo, { sticky: true, className: 'etiqueta-mapa', direction: 'top' });
             }
+        }
+        reg.layer = layer;
+        grupo.addLayer(layer);
+    });
 
-            // ---- Puntos (cámaras y sumideros) ----
-            if (geom.type === 'Point') {
-                try {
-                        puntoNumero++; // Incrementar contador
+    if (capa !== 'progresivas') grupo.addTo(map);
+    if (capa === 'tuberias_camaras' || capa === 'tuberias_sumideros') actualizarFlujo();
+}
 
-                        const [lon, lat] = geom.coordinates;
-                        // Normalizar campos del GeoPackage (MAYÚSCULAS) a los que usa el frontend
-                        if (capa === 'sumideros') {
-                            feature.cod_cam = p.COD_SUM;
-                            feature.accesibili = p.CONDICION || 'Sumidero';
-                            feature.localizaci = p.JUSTIFICAC || '';
-                            feature.estado = p.ESTADO_DE || '';
-                            feature.fot_cam_q = p.FOTOS_DRIV || p.FOTOS_DE_S;
-                        } else {
-                            feature.cod_cam = p.COD_CAM;
-                            feature.accesibili = p.ACCESIBILI;
-                            feature.localizaci = p.LOCALIZACI || p.UBICACION || '';
-                            feature.rasante = p.RASANTE;
-                            feature.estado = p['ESTADO DE'] || p.CONDICION || '';
-                            feature.fot_cam_q = p['FOTO CAM_Q'] || p['FOTO CAM D'];
-                        }
-                        const accesibili = feature.accesibili || 'Otro estado';
-                        const esSumidero = capa === 'sumideros';
+// ---------------------------------------------------------------------
+// Panel de capas y leyendas
+// ---------------------------------------------------------------------
+function construirPanelCapas() {
+    const cont = document.getElementById('listaCapas');
+    const porGrupo = {};
+    ORDEN_PANEL.forEach(c => (porGrupo[CAPAS[c].grupo] ||= []).push(c));
 
-                        // Obtener color según accesibilidad
-                        const colorMap = {
-                            'accesible operativo': '#28a745',
-                            'accesible con dificultad': '#ffc107',
-                            'inferido': '#6c757d',
-                            'no accesible': '#dc3545'
-                        };
-                        const colorAccesibilidad = esSumidero ? '#0077b6' : (colorMap[accesibili?.toLowerCase()] || '#17a2b8');
+    cont.innerHTML = Object.entries(porGrupo).map(([grupo, capas]) => `
+        <div class="grupo">
+            <h2 class="grupo__titulo">${esc(grupo)}</h2>
+            ${capas.map(htmlCapa).join('')}
+            ${grupo === 'Red de drenaje' ? `
+                <label class="interruptor"><input type="checkbox" id="chkFlujo" ${flujoActivo ? 'checked' : ''}>
+                Animar el sentido del flujo en las tuberías</label>` : ''}
+        </div>`).join('');
 
-                        // Simbología original: icono SVG (círculo para cámaras, cuadrado con rejilla para sumideros)
-                        const marker = L.marker([lat, lon], {
-                            icon: esSumidero ? createSumideroIcon() : createCustomIcon(accesibili)
-                        });
+    cont.querySelectorAll('[data-capa-chk]').forEach(chk => chk.addEventListener('change', () => {
+        alternarCapa(chk.dataset.capaChk, chk.checked);
+    }));
+    cont.querySelectorAll('[data-tema]').forEach(sel => sel.addEventListener('change', () => {
+        cambiarTema(sel.dataset.tema, sel.value);
+    }));
+    document.getElementById('chkFlujo').addEventListener('change', e => {
+        flujoActivo = e.target.checked;
+        actualizarFlujo();
+    });
 
-                        // Crear popup con título y color dinámico
-                        const tituloPunto = esSumidero ? `🟦 Sumidero ${feature.cod_cam || puntoNumero}` : `📍 Cámara ${feature.cod_cam || puntoNumero}`;
-                        let popupContent = `<div class="popup-title" style="background: ${colorAccesibilidad};">${tituloPunto}</div>`;
-                        
-                        // Debug: mostrar todos los campos disponibles
-                        console.log('Campos disponibles:', Object.keys(feature));
-                        console.log('Valor fot_cam_q:', feature.fot_cam_q);
-                        
-                        // 1. FOTO al inicio - buscar en varios campos posibles
-                        let fotoUrl = feature.fot_cam_q || feature.fot_cam_d || feature.foto || feature.imagen || feature.img;
-                        
-                        // Buscar cualquier campo que contenga 'fot' o 'img'
-                        if (!fotoUrl) {
-                            for (let key of Object.keys(feature)) {
-                                if ((key.toLowerCase().includes('fot') || key.toLowerCase().includes('img')) && feature[key]) {
-                                    fotoUrl = feature[key];
-                                    console.log('Campo de foto encontrado:', key, '=', fotoUrl);
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        if (fotoUrl) {
-                            const candidatas = urlsFotoDrive(fotoUrl);
-                            // onerror prueba la siguiente URL; si se agotan, muestra el botón de respaldo
-                            const onError = `var l=JSON.parse(this.dataset.urls);var i=parseInt(this.dataset.idx)+1;if(i&lt;l.length){this.dataset.idx=i;this.src=l[i];}else{this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='block';}`;
-                            popupContent += `
-                                <div class="popup-image-container" style="border-color: ${colorAccesibilidad};">
-                                    <img src="${candidatas[0]}" class="popup-image" referrerpolicy="no-referrer" loading="lazy"
-                                         data-urls='${JSON.stringify(candidatas)}' data-idx="0"
-                                         style="border-color: ${colorAccesibilidad};" alt="Foto de cámara"
-                                         onerror="${onError}"
-                                         onclick="window.open('${fotoUrl}', '_blank')">
-                                    <a href="${fotoUrl}" target="_blank" class="popup-image-link" style="background: ${colorAccesibilidad}; display:none;">📷 Ver imagen en Drive</a>
-                                </div>
-                            `;
-                        }
-                        
-                        // 2. Código de cámara
-                        if (feature.cod_cam) {
-                            popupContent += `
-                                <div class="popup-row">
-                                    <span class="popup-label">Código Cámara:</span>
-                                    <span class="popup-value">${feature.cod_cam}</span>
-                                </div>
-                            `;
-                        }
-                        
-                        // 3. Accesibilidad
-                        if (feature.accesibili) {
-                            popupContent += `
-                                <div class="popup-row">
-                                    <span class="popup-label">Accesibilidad:</span>
-                                    <span class="popup-value">${feature.accesibili}</span>
-                                </div>
-                            `;
-                        }
-                        
-                        // 4. Localización
-                        if (feature.localizaci) {
-                            popupContent += `
-                                <div class="popup-row">
-                                    <span class="popup-label">Localización:</span>
-                                    <span class="popup-value">${feature.localizaci}</span>
-                                </div>
-                            `;
-                        }
-                        
-                        // 5. Rasante
-                        if (feature.rasante) {
-                            popupContent += `
-                                <div class="popup-row">
-                                    <span class="popup-label">Rasante:</span>
-                                    <span class="popup-value">${feature.rasante}</span>
-                                </div>
-                            `;
-                        }
-                        
-                        // 6. Estado
-                        if (feature.estado) {
-                            popupContent += `
-                                <div class="popup-row">
-                                    <span class="popup-label">Estado:</span>
-                                    <span class="popup-value">${feature.estado}</span>
-                                </div>
-                            `;
-                        }
-                        
-                        // 7. Coordenadas (del campo si existe)
-                        if (feature.coordenadas) {
-                            popupContent += `
-                                <div class="popup-row">
-                                    <span class="popup-label">Coordenadas:</span>
-                                    <span class="popup-value">${feature.coordenadas}</span>
-                                </div>
-                            `;
-                        }
-                        
-                        // 8. Latitud y Longitud (calculadas de la geometría)
-                        popupContent += `
-                            <div class="popup-row">
-                                <span class="popup-label">Latitud:</span>
-                                <span class="popup-value">${lat.toFixed(6)}</span>
-                            </div>
-                            <div class="popup-row">
-                                <span class="popup-label">Longitud:</span>
-                                <span class="popup-value">${lon.toFixed(6)}</span>
-                            </div>
-                        `;
-                        
-                        // Botón para descargar ficha técnica
-                        const fichaData = JSON.stringify({
-                            cod_cam: feature.cod_cam || `CAM${puntoNumero}`,
-                            accesibili: feature.accesibili || 'Sin datos',
-                            localizaci: feature.localizaci || 'Sin datos',
-                            rasante: feature.rasante || 'Sin datos',
-                            estado: feature.estado || 'Sin datos',
-                            coordenadas: feature.coordenadas || 'Sin datos',
-                            lat: lat.toFixed(6),
-                            lon: lon.toFixed(6),
-                            fotoUrl: fotoUrl || '',
-                            color: colorAccesibilidad
-                        }).replace(/'/g, "\\'");
-                        
-                        popupContent += `
-                            <div class="popup-download-btn">
-                                <button onclick='generarFichaPDF(${fichaData})' class="btn-ficha">
-                                    📄 Descargar Ficha Técnica PDF
-                                </button>
-                            </div>
-                        `;
-                        
-                        // Envolver contenido en un div con scroll y color personalizado
-                        popupContent = `<div class="popup-scroll-container" data-color="${colorAccesibilidad}">${popupContent}</div>`;
-                        
-                        marker.bindPopup(popupContent, {
-                            autoPan: true,
-                            autoPanPadding: [50, 50],
-                            className: `popup-${accesibili?.toLowerCase().replace(/\s+/g, '-') || 'default'}`
-                        });
-                        (esSumidero ? grupos.sumideros : grupos.camaras).addLayer(marker);
-                } catch (e) {
-                    console.error('Error al procesar geometría:', e);
-                }
+    document.getElementById('mapasBase').innerHTML = Object.entries(MAPAS_BASE).map(([clave, b]) =>
+        `<button type="button" role="radio" data-base="${clave}" aria-checked="${clave === 'gris'}">${esc(b.nombre)}</button>`).join('');
+    document.querySelectorAll('#mapasBase button').forEach(b => b.addEventListener('click', () => cambiarMapaBase(b.dataset.base)));
+}
+
+function htmlCapa(capa) {
+    const def = CAPAS[capa];
+    const n = registro[capa].length;
+    const cuenta = capa === 'area'
+        ? `${numero(registro.area[0]?.props.area_ha, 1)} ha`
+        : n.toLocaleString('es-BO');
+    const temas = TEMAS[capa];
+    return `
+        <div class="capa" id="capa-${capa}">
+            <div class="capa__cabeza">
+                <input type="checkbox" id="chk-${capa}" data-capa-chk="${capa}" checked>
+                <span class="capa__simbolo">${simboloCapa(capa)}</span>
+                <label class="capa__nombre" for="chk-${capa}">${esc(def.nombre)}</label>
+                <span class="capa__cuenta">${cuenta}</span>
+            </div>
+            <div class="capa__cuerpo">
+                ${temas ? `
+                    <div class="tema">
+                        <label for="tema-${capa}">Simbolizar por</label>
+                        <select id="tema-${capa}" data-tema="${capa}">
+                            ${Object.entries(temas).map(([campo, t]) =>
+                                `<option value="${campo}" ${campo === def.tema ? 'selected' : ''}>${esc(t.titulo)}</option>`).join('')}
+                        </select>
+                    </div>` : ''}
+                <ul class="leyenda" id="leyenda-${capa}">${htmlLeyenda(capa)}</ul>
+            </div>
+        </div>`;
+}
+
+function htmlLeyenda(capa) {
+    const def = CAPAS[capa];
+    const regs = registro[capa];
+    if (TEMAS[capa]) {
+        const tema = TEMAS[capa][def.tema];
+        const campo = def.tema;
+        const filas = tema.clases.map(([valor, rotulo, color]) => {
+            const n = regs.filter(r => r.props[campo] === valor).length;
+            return n ? `<li><span class="muestra">${simboloCapa(capa, color)}</span><span class="texto">${esc(rotulo)}</span><span class="n">${n}</span></li>` : '';
+        });
+        const sin = regs.filter(r => !tema.clases.some(([v]) => v === r.props[campo])).length;
+        if (sin) filas.push(`<li><span class="muestra">${simboloCapa(capa, SIN_DATO)}</span><span class="texto">Sin dato</span><span class="n">${sin}</span></li>`);
+        if (def.zoomMin) filas.push(`<li class="nota">Visibles desde el zoom ${def.zoomMin}; acérquese para verlas.</li>`);
+        return filas.join('');
+    }
+    if (capa === 'tuberias_camaras' || capa === 'tuberias_sumideros') {
+        const firme = regs.filter(r => !esInferida(r.props)).length;
+        const inf = regs.length - firme;
+        return `
+            <li><span class="muestra">${svgLinea(def.color, 3)}</span><span class="texto">Trazado confirmado o probable</span><span class="n">${firme}</span></li>
+            <li><span class="muestra">${svgLinea(def.color, 3, true)}</span><span class="texto">Trazado inferido o no determinado</span><span class="n">${inf}</span></li>
+            ${capa === 'tuberias_camaras' ? '<li class="nota">El grosor es proporcional al diámetro.</li>' : ''}`;
+    }
+    if (capa === 'canales') {
+        const km = regs.reduce((s, r) => s + (Number(r.props.longitud_eje_m) || 0), 0) / 1000;
+        return `<li class="nota">${numero(km, 2)} km de eje; la ficha de cada canal resume sus secciones.</li>`;
+    }
+    if (capa === 'area') return '<li class="nota">Límite del relevamiento: Casco Viejo de Oruro.</li>';
+    return '';
+}
+
+function alternarCapa(capa, activa) {
+    visibles[capa] = activa;
+    document.getElementById(`capa-${capa}`).classList.toggle('apagada', !activa);
+    if (capa === 'progresivas') {
+        actualizarZoom();
+        if (activa && map.getZoom() < CAPAS.progresivas.zoomMin) aviso('Las secciones de canal se muestran desde el zoom 16.');
+    } else if (activa) {
+        grupos[capa].addTo(map);
+    } else {
+        map.removeLayer(grupos[capa]);
+    }
+    actualizarFlujo();
+}
+
+function cambiarTema(capa, campo) {
+    CAPAS[capa].tema = campo;
+    registro[capa].forEach(reg => reg.layer.setIcon(icono(capa, colorTema(capa, reg.props))));
+    document.getElementById(`leyenda-${capa}`).innerHTML = htmlLeyenda(capa);
+}
+
+// ---------------------------------------------------------------------
+// Animación del sentido del flujo
+// ---------------------------------------------------------------------
+function actualizarFlujo() {
+    lineasFlujo = [];
+    ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
+        (registro[capa] || []).forEach(reg => {
+            if (!reg.flujo) return;
+            const mostrar = flujoActivo && visibles[capa];
+            if (mostrar) {
+                if (!map.hasLayer(reg.flujo)) reg.flujo.addTo(map);
+                reg.flujo.eachLayer(l => lineasFlujo.push(l));
+            } else if (map.hasLayer(reg.flujo)) {
+                map.removeLayer(reg.flujo);
             }
         });
-        
-        capaActual.addTo(map);
+    });
+}
 
-        // Iconos de la simbología real para el control de capas
-        const icCamara = `<svg width="18" height="18" viewBox="0 0 32 32" style="vertical-align:-4px;margin-right:4px;">
-            <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-            <circle cx="16" cy="16" r="9.5" fill="none" stroke="#28a745" stroke-width="2"/>
-            <g transform="translate(16,16)" fill="#28a745">
-                <rect x="-6" y="-3" width="4.5" height="1.5" rx="0.5"/><rect x="1.5" y="-3" width="4.5" height="1.5" rx="0.5"/>
-                <rect x="-6" y="0" width="4.5" height="1.5" rx="0.5"/><rect x="1.5" y="0" width="4.5" height="1.5" rx="0.5"/>
-                <rect x="-6" y="3" width="4.5" height="1.5" rx="0.5"/><rect x="1.5" y="3" width="4.5" height="1.5" rx="0.5"/></g></svg>`;
-        const icSumidero = `<svg width="16" height="16" viewBox="0 0 28 28" style="vertical-align:-3px;margin-right:4px;">
-            <rect x="3" y="3" width="22" height="22" rx="3" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-            <rect x="6" y="6" width="16" height="16" rx="2" fill="none" stroke="#0077b6" stroke-width="2"/>
-            <line x1="10" y1="7" x2="10" y2="21" stroke="#0077b6" stroke-width="1.6"/>
-            <line x1="14" y1="7" x2="14" y2="21" stroke="#0077b6" stroke-width="1.6"/>
-            <line x1="18" y1="7" x2="18" y2="21" stroke="#0077b6" stroke-width="1.6"/></svg>`;
-        const icTubCam = `<svg width="26" height="12" viewBox="0 0 26 12" style="vertical-align:-1px;margin-right:4px;">
-            <line x1="1" y1="6" x2="25" y2="6" stroke="#1f78b4" stroke-width="4"/></svg>`;
-        const icTubSum = `<svg width="26" height="12" viewBox="0 0 26 12" style="vertical-align:-1px;margin-right:4px;">
-            <line x1="1" y1="6" x2="25" y2="6" stroke="#7fd4f5" stroke-width="4"/></svg>`;
+function animarFlujo() {
+    const offset = -(performance.now() / 50) % 16;
+    for (const linea of lineasFlujo) {
+        if (linea._path) linea._path.setAttribute('stroke-dashoffset', offset);
+    }
+    requestAnimationFrame(animarFlujo);
+}
+if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) requestAnimationFrame(animarFlujo);
 
-        // Control para prender/apagar cada capa (con su simbología real)
-        const overlays = {
-            [`${icCamara}Cámaras`]: grupos.camaras,
-            [`${icSumidero}Sumideros`]: grupos.sumideros,
-            [`${icTubCam}Tuberías cámaras`]: grupos.tuberias_camaras,
-            [`${icTubSum}Tuberías sumideros`]: grupos.tuberias_sumideros
-        };
-        window.controlCapas = L.control.layers(null, overlays, { collapsed: false, position: 'topright' }).addTo(map);
+// ---------------------------------------------------------------------
+// Fichas
+// ---------------------------------------------------------------------
+// Cada campo: [propiedad, etiqueta, formato]. Formatos: texto, mono,
+// estado:<tema>, num:<decimales>:<unidad>, sino, fecha, canal.
+const FICHAS = {
+    camaras: {
+        tipo: 'Cámara de inspección',
+        subtitulo: p => [etiqueta(p.tipo_camara), etiqueta(p.localizacion)].filter(Boolean).join(' · '),
+        secciones: [
+            ['Inspección', [
+                ['accesibilidad', 'Accesibilidad', 'estado:ACCESIBILIDAD'],
+                ['tipo_observacion', 'Tipo de observación', 'texto'],
+                ['nivel_certeza', 'Nivel de certeza', 'estado:CERTEZA'],
+                ['fecha_registro', 'Fecha de registro', 'fecha']]],
+            ['Estado y funcionamiento', [
+                ['estado_fisico', 'Estado físico', 'estado:ESTADO'],
+                ['funcionamiento_drenaje', 'Funcionamiento del drenaje', 'estado:ESTADO'],
+                ['condicion_interior', 'Condición interior', 'estado:CONDICION'],
+                ['localizacion_dano', 'Localización del daño', 'texto'],
+                ['sedimentos', 'Sedimentos', 'texto'],
+                ['escalones', 'Escalones', 'sino'],
+                ['estado_escalones', 'Estado de los escalones', 'estado:ESTADO']]],
+            ['Características', [
+                ['tipo_camara', 'Tipo de cámara', 'texto'],
+                ['tipo_ci', 'Configuración', 'texto'],
+                ['tipo_tapa', 'Tipo de tapa', 'texto'],
+                ['diametro_tapa_m', 'Diámetro de la tapa', 'num:2:m'],
+                ['altura_tapa_m', 'Altura de la tapa', 'num:3:m'],
+                ['altura_solera_m', 'Altura de solera', 'num:2:m'],
+                ['prof_tub_entrada_m', 'Profundidad de entrada', 'num:2:m'],
+                ['prof_tub_salida_m', 'Profundidad de salida', 'num:2:m'],
+                ['n_entradas', 'Tuberías de entrada', 'num:0:'],
+                ['n_salidas', 'Tuberías de salida', 'num:0:'],
+                ['gestion', 'Gestión de construcción', 'texto']]],
+            ['Conexiones', [
+                ['sumideros_asociados', 'Sumideros asociados', 'num:0:'],
+                ['recibe_de', 'Recibe de las cámaras', 'mono'],
+                ['descarga', 'Descarga', 'canal']]],
+            ['Ubicación', [
+                ['sector', 'Sector', 'sector'],
+                ['ubicacion', 'Ubicación en la vía', 'texto'],
+                ['rasante', 'Rasante', 'texto'],
+                ['material_rasante', 'Material de la rasante', 'texto'],
+                ['este', 'Este (UTM 19S)', 'num:2:m'],
+                ['norte', 'Norte (UTM 19S)', 'num:2:m'],
+                ['elevacion_mds_m', 'Elevación (MDS)', 'num:2:m']]]
+        ],
+        foto: p => p.foto_url || p.foto_descarga_url,
+        texto: [['observaciones', 'Observaciones de campo']]
+    },
+    sumideros: {
+        tipo: 'Sumidero',
+        subtitulo: p => [etiqueta(p.tipo_rejilla), p.canal_receptor ? `Canal ${nombreCanal(p.canal_receptor)}` : (p.camara_referencia ? `Cámara ${p.camara_referencia}` : null)].filter(Boolean).join(' · '),
+        secciones: [
+            ['Inspección', [
+                ['apertura', 'Abierto en la inspección', 'sino'],
+                ['nivel_certeza', 'Nivel de certeza', 'estado:CERTEZA'],
+                ['fecha_registro', 'Fecha de registro', 'fecha'],
+                ['codigo_campo', 'Código registrado en campo', 'mono']]],
+            ['Estado y funcionamiento', [
+                ['condicion', 'Condición de funcionamiento', 'estado:CONDICION'],
+                ['estado_estructura', 'Estado de la estructura', 'estado:ESTADO'],
+                ['estado_rejilla', 'Estado de la rejilla', 'estado:ESTADO'],
+                ['sedimento', 'Tipo de sedimento', 'texto'],
+                ['altura_sedimento_m', 'Altura de sedimento', 'num:2:m']]],
+            ['Características', [
+                ['tipo_rejilla', 'Tipo de rejilla', 'texto'],
+                ['material_rasante', 'Material de la rasante', 'texto'],
+                ['cuneta', 'Cuneta', 'sino'],
+                ['ancho_m', 'Ancho', 'num:2:m'],
+                ['largo_m', 'Largo', 'num:2:m'],
+                ['espesor_m', 'Espesor de la rejilla', 'num:2:m'],
+                ['altura_solera_m', 'Altura de solera', 'num:2:m']]],
+            ['Conexiones', [
+                ['camara_referencia', 'Cámara de referencia', 'mono'],
+                ['canal_receptor', 'Canal receptor', 'canal'],
+                ['descarga', 'Descarga', 'canal']]],
+            ['Ubicación', [
+                ['sector', 'Sector', 'sector'],
+                ['este', 'Este (UTM 19S)', 'num:2:m'],
+                ['norte', 'Norte (UTM 19S)', 'num:2:m'],
+                ['elevacion_mds_m', 'Elevación (MDS)', 'num:2:m']]]
+        ],
+        foto: p => p.foto_url || p.foto_descarga_url,
+        texto: [['justificacion', 'Motivo (apertura)'], ['observaciones', 'Observaciones de campo']]
+    },
+    tuberias_camaras: {
+        tipo: 'Tubería de cámara',
+        subtitulo: p => `${p.origen || '¿?'} → ${conCanales(p.destino) || '¿?'}`,
+        secciones: [
+            ['Conexión', [
+                ['origen', 'Origen', 'mono'],
+                ['destino', 'Destino', 'canal'],
+                ['destino_tipo', 'Tipo de destino', 'texto'],
+                ['metodo_origen', 'Origen determinado', 'texto'],
+                ['metodo_destino', 'Destino determinado', 'texto'],
+                ['nivel_certeza', 'Nivel de certeza', 'estado:CERTEZA']]],
+            ['Características', [
+                ['funcion', 'Función', 'texto'],
+                ['material', 'Material', 'texto'],
+                ['diametro_pulg', 'Diámetro', 'num:0:pulg'],
+                ['profundidad_m', 'Profundidad', 'num:2:m'],
+                ['estado', 'Estado', 'estado:ESTADO'],
+                ['codigo_campo', 'Código registrado en campo', 'mono']]],
+            ['Geometría y relieve', [
+                ['longitud_m', 'Longitud', 'num:2:m'],
+                ['distancia_campo_m', 'Distancia registrada en campo', 'num:2:m'],
+                ['elevacion_inicio_m', 'Elevación inicial (MDS)', 'num:2:m'],
+                ['elevacion_fin_m', 'Elevación final (MDS)', 'num:2:m'],
+                ['pendiente_superficial_pct', 'Pendiente de la superficie', 'num:2:%']]]
+        ],
+        texto: [['observaciones', 'Observaciones de campo']],
+        nota: 'La pendiente corresponde a la superficie según el MDS; no es la pendiente hidráulica de la tubería.'
+    },
+    tuberias_sumideros: null,
+    canales: {
+        tipo: 'Canal',
+        subtitulo: () => null,
+        titulo: p => nombreCanal(p.nombre),
+        secciones: [
+            ['Levantamiento', [
+                ['codigo', 'Código', 'mono'],
+                ['longitud_eje_m', 'Longitud del eje', 'num:1:m'],
+                ['longitud_registrada_m', 'Longitud registrada', 'num:1:m'],
+                ['progresivas', 'Progresivas levantadas', 'num:0:'],
+                ['secciones_medidas', 'Secciones medidas', 'num:0:'],
+                ['secciones_estimadas', 'Secciones estimadas', 'num:0:'],
+                ['sin_dimensiones', 'Sin dimensiones', 'num:0:'],
+                ['area_seccion_media_m2', 'Área media de sección medida', 'num:2:m²']]],
+            ['Relieve (MDS)', [
+                ['elevacion_min_m', 'Elevación mínima', 'num:2:m'],
+                ['elevacion_max_m', 'Elevación máxima', 'num:2:m'],
+                ['desnivel_m', 'Desnivel', 'num:2:m'],
+                ['pendiente_media_pct', 'Pendiente media', 'num:2:%'],
+                ['tramos_contrapendiente', 'Tramos en contrapendiente', 'tramos']]],
+            ['Estado', [
+                ['estado_predominante', 'Estado predominante', 'estado:ESTADO'],
+                ['progresivas_estado_malo', 'Progresivas en mal estado', 'num:0:'],
+                ['progresivas_riesgo_alto', 'Progresivas con riesgo alto', 'num:0:'],
+                ['progresivas_embovedadas', 'Progresivas embovedadas', 'num:0:']]]
+        ],
+        nota: 'Elevaciones y pendientes derivadas del MDS fotogramétrico; deben verificarse con cotas topográficas.'
+    },
+    progresivas: {
+        tipo: 'Sección de canal',
+        titulo: p => p.progresiva,
+        subtitulo: p => nombreCanal(p.canal),
+        secciones: [
+            ['Sección', [
+                ['dato_estimado', 'Dimensiones', 'medida'],
+                ['ancho_superior_m', 'Ancho superior (A)', 'num:2:m'],
+                ['ancho_inferior_m', 'Ancho inferior (B)', 'num:2:m'],
+                ['profundidad_c_m', 'Profundidad (C)', 'num:2:m'],
+                ['profundidad_d_m', 'Profundidad (D)', 'num:2:m'],
+                ['area_seccion_m2', 'Área de la sección', 'num:2:m²'],
+                ['distancia_m', 'Distancia a la siguiente', 'num:1:m'],
+                ['nivel_certeza', 'Nivel de certeza', 'estado:CERTEZA']]],
+            ['Construcción y estado', [
+                ['revestimiento', 'Revestimiento', 'texto'],
+                ['boveda', 'Bóveda', 'texto'],
+                ['estado_estructural', 'Estado estructural', 'estado:ESTADO'],
+                ['riesgo', 'Riesgo peatonal y vehicular', 'texto'],
+                ['paso_vehicular', 'Paso vehicular', 'sino'],
+                ['paso_peatonal', 'Paso peatonal', 'sino'],
+                ['sedimentos', 'Sedimentos', 'texto']]],
+            ['Conexiones y rejilla', [
+                ['conexion_pluvial', 'Conexión al alcantarillado pluvial', 'sino'],
+                ['conexion_sanitaria', 'Conexión al alcantarillado sanitario', 'sino'],
+                ['conexion_natural', 'Conexión a drenaje natural', 'sino'],
+                ['rejilla_solidos', 'Rejilla para sólidos', 'sino'],
+                ['material_rejilla', 'Material de la rejilla', 'texto'],
+                ['estado_rejilla', 'Estado de la rejilla', 'estado:ESTADO']]],
+            ['Ubicación y relieve', [
+                ['ramal', 'Ramal', 'texto'],
+                ['fecha_registro', 'Fecha de registro', 'fecha'],
+                ['este', 'Este (UTM 19S)', 'num:2:m'],
+                ['norte', 'Norte (UTM 19S)', 'num:2:m'],
+                ['elevacion_mds_m', 'Elevación (mínima en 1 m)', 'num:2:m'],
+                ['pendiente_long_pct', 'Pendiente al siguiente tramo', 'num:2:%']]]
+        ],
+        texto: [['observaciones', 'Observaciones de campo']]
+    }
+};
+FICHAS.tuberias_sumideros = { ...FICHAS.tuberias_camaras, tipo: 'Tubería de sumidero' };
 
-        // Ajustar vista a los datos
-        try {
-            const b = capaActual.getBounds();
-            if (b.isValid()) map.fitBounds(b, { padding: [50, 50] });
-        } catch (e) { /* sin bounds */ }
-        
-        // Actualizar UI
-        document.getElementById('btnLimpiar').style.display = 'block';
-        document.getElementById('totalPuntos').textContent = puntoNumero;
-        document.getElementById('ultimaActualizacion').textContent = new Date().toLocaleString('es-BO');
-        document.getElementById('infoPanel').style.display = 'block';
-        
-        mostrarEstado(`✅ Se cargaron ${puntoNumero} puntos correctamente`, 'success');
-        
-    } catch (error) {
-        console.error('Error:', error);
-        mostrarEstado('❌ Error al cargar los datos: ' + error.message, 'error');
+const PALETAS = { ESTADO, CONDICION, CERTEZA, ACCESIBILIDAD };
+
+// Devuelve el valor ya formateado (texto plano) y, si aplica, su color
+function valorCampo(props, [campo, , formato]) {
+    const v = props[campo];
+    if (formato === 'tramos') {
+        return props.tramos ? { texto: `${v ?? 0} de ${props.tramos}` } : null;
+    }
+    if (formato === 'medida') {
+        if (v === true) return { texto: 'Estimadas (no medidas)' };
+        return props.nivel_certeza === 'CONFIRMADO' ? { texto: 'Medidas en campo' } : { texto: 'Sin registro' };
+    }
+    if (v === null || v === undefined || v === '') return null;
+    if (formato.startsWith('estado:')) {
+        const paleta = PALETAS[formato.split(':')[1]];
+        return { texto: etiqueta(v), color: colorDe(paleta, v) };
+    }
+    if (formato.startsWith('num:')) {
+        const [, dec, unidad] = formato.split(':');
+        const n = numero(v, Number(dec));
+        return n === null ? null : { texto: unidad ? `${n} ${unidad}` : n };
+    }
+    switch (formato) {
+        case 'mono': return { texto: String(v), mono: true };
+        case 'sino': return { texto: siNo(v) };
+        case 'fecha': return { texto: fecha(v) };
+        case 'canal': return { texto: conCanales(v) };
+        case 'sector': return { texto: v === 'OTRA' ? 'Otra codificación (sumideros de canal)' : `Sector ${v}` };
+        default: return { texto: etiqueta(v) };
     }
 }
 
-// Limpiar capa
-function limpiarCapa() {
-    if (capaActual) {
-        map.removeLayer(capaActual);
-        capaActual = null;
-        document.getElementById('btnLimpiar').style.display = 'none';
-        document.getElementById('infoPanel').style.display = 'none';
-        mostrarEstado('Capa limpiada correctamente', 'info');
+function seccionesFicha(reg) {
+    const def = FICHAS[reg.capa];
+    const secciones = def.secciones.map(([titulo, campos]) => ({
+        titulo,
+        filas: campos.map(c => ({ etiqueta: c[1], ...(valorCampo(reg.props, c) || {}) })).filter(f => f.texto)
+    })).filter(s => s.filas.length);
+    if (reg.latlng) {
+        const ubic = secciones.find(s => s.titulo.startsWith('Ubicación'));
+        const fila = { etiqueta: 'Latitud, longitud', texto: `${reg.latlng.lat.toFixed(6)}, ${reg.latlng.lng.toFixed(6)}` };
+        if (ubic) ubic.filas.push(fila);
+    }
+    return secciones;
+}
+
+function tituloFicha(reg) {
+    const def = FICHAS[reg.capa];
+    return def.titulo ? def.titulo(reg.props) : reg.props.codigo;
+}
+
+function colorFicha(reg) {
+    if (TEMAS[reg.capa]) return colorTema(reg.capa, reg.props);
+    if (reg.capa === 'canales') return colorDe(ESTADO, reg.props.estado_predominante);
+    return CAPAS[reg.capa].color;
+}
+
+let fichaActual = null;
+
+function htmlFicha(reg) {
+    fichaActual = reg;
+    const def = FICHAS[reg.capa];
+    const p = reg.props;
+    const subtitulo = def.subtitulo ? def.subtitulo(p) : null;
+    const chips = [];
+    if (p.sector) chips.push(p.sector === 'OTRA' ? 'Otra codificación' : `Sector ${p.sector}`);
+    if (p.nivel_certeza) chips.push(`<i style="background:${colorDe(CERTEZA, p.nivel_certeza)}"></i>${etiqueta(p.nivel_certeza)}`);
+    if (reg.capa === 'progresivas' && p.cod_canal) chips.push(p.cod_canal);
+
+    const foto = def.foto ? def.foto(p) : null;
+    const urls = foto ? urlsFotoDrive(foto) : [];
+
+    const cuerpo = seccionesFicha(reg).map(s => `
+        <section class="ficha__seccion">
+            <h4>${esc(s.titulo)}</h4>
+            <dl class="ficha__datos">${s.filas.map(f => `
+                <dt>${esc(f.etiqueta)}</dt>
+                <dd>${f.color ? `<span class="estado"><i style="background:${f.color}"></i>${esc(f.texto)}</span>`
+                    : f.mono ? `<span class="mono">${esc(f.texto)}</span>` : esc(f.texto)}</dd>`).join('')}
+            </dl>
+        </section>`).join('');
+
+    const textos = (def.texto || []).filter(([campo]) => p[campo]).map(([campo, titulo]) => `
+        <section class="ficha__seccion"><h4>${esc(titulo)}</h4><p class="ficha__texto">${esc(p[campo])}</p></section>`).join('');
+    const nota = def.nota ? `<section class="ficha__seccion"><p class="ficha__texto">${esc(def.nota)}</p></section>` : '';
+
+    return `
+        <article style="--color-estado:${colorFicha(reg)}">
+            <header class="ficha__cabeza">
+                <div class="ficha__tipo">${esc(def.tipo)}</div>
+                <div class="ficha__codigo${reg.capa === 'canales' ? ' ficha__codigo--nombre' : ''}">${esc(tituloFicha(reg))}</div>
+                ${subtitulo ? `<div class="ficha__subtitulo">${esc(subtitulo)}</div>` : ''}
+                ${chips.length ? `<div class="ficha__chips">${chips.map(c => `<span class="chip">${c}</span>`).join('')}</div>` : ''}
+            </header>
+            <div class="ficha__cuerpo">
+                ${def.foto ? `
+                    <div class="ficha__foto">
+                        ${urls.length ? `<img src="${esc(urls[0])}" alt="Fotografía de campo de ${esc(p.codigo)}" loading="lazy" referrerpolicy="no-referrer" data-urls='${esc(JSON.stringify(urls))}' data-original="${esc(foto)}">` : ''}
+                        <div class="sin-foto" ${urls.length ? 'hidden' : ''}>Sin fotografía registrada</div>
+                    </div>` : ''}
+                ${cuerpo}${textos}${nota}
+            </div>
+            <footer class="ficha__pie">
+                <button type="button" class="boton" data-accion="pdf">
+                    <svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M10 17h6"/></svg>Ficha PDF</button>
+                <button type="button" class="boton" data-accion="ruta">
+                    <svg viewBox="0 0 24 24"><path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></svg>Cómo llegar</button>
+                ${foto ? `<a class="boton" href="${esc(foto)}" target="_blank" rel="noopener">
+                    <svg viewBox="0 0 24 24"><path d="M4 7h3l2-2h6l2 2h3v12H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Foto original</a>` : ''}
+            </footer>
+        </article>`;
+}
+
+// Fotos con URLs alternativas y acciones de la ficha
+function prepararFicha(popup) {
+    const el = popup.getElement();
+    if (!el) return;
+    el._reg = fichaActual;
+    if (!el.dataset.listo) {
+        el.dataset.listo = '1';
+        el.addEventListener('click', e => {
+            const b = e.target.closest('[data-accion]');
+            if (!b) return;
+            if (b.dataset.accion === 'pdf') generarFichaPDF(el._reg);
+            if (b.dataset.accion === 'ruta') comoLlegar(el._reg);
+        });
+    }
+    // El contenido se regenera en cada apertura: la foto se prepara cada vez
+    const img = el.querySelector('.ficha__foto img');
+    if (img) {
+        img.addEventListener('error', () => {
+            const urls = JSON.parse(img.dataset.urls);
+            const i = Number(img.dataset.idx || 0) + 1;
+            if (i < urls.length) {
+                img.dataset.idx = i;
+                img.src = urls[i];
+            } else {
+                img.hidden = true;
+                img.nextElementSibling.hidden = false;
+                img.nextElementSibling.textContent = 'La fotografía no está disponible; use «Foto original».';
+            }
+        });
+        img.addEventListener('click', () => window.open(img.dataset.original, '_blank', 'noopener'));
     }
 }
 
-// Obtener ubicación del usuario
-function obtenerUbicacion() {
-    if (!navigator.geolocation) {
-        mostrarEstado('Tu navegador no soporta geolocalización', 'error');
+function centroDe(reg) {
+    if (reg.latlng) return reg.latlng;
+    return reg.layer.getBounds().getCenter();
+}
+
+// ---------------------------------------------------------------------
+// Búsqueda
+// ---------------------------------------------------------------------
+const TIPO_BUSQUEDA = {
+    camaras: 'Cámara', sumideros: 'Sumidero', tuberias_camaras: 'Tubería de cámara',
+    tuberias_sumideros: 'Tubería de sumidero', canales: 'Canal', progresivas: 'Sección de canal'
+};
+
+function normalizar(s) {
+    return String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z0-9+]/g, '');
+}
+
+function buscar(q) {
+    const lista = document.getElementById('resultados');
+    const nq = normalizar(q);
+    if (nq.length < 2) { lista.innerHTML = ''; return; }
+    const hallados = [];
+    for (const capa of Object.keys(TIPO_BUSQUEDA)) {
+        for (const reg of registro[capa] || []) {
+            const textos = [reg.props.codigo, reg.props.codigo_campo, capa === 'canales' ? nombreCanal(reg.props.nombre) : null];
+            const puntaje = Math.min(...textos.filter(Boolean).map(t => {
+                const nt = normalizar(t);
+                return nt === nq ? 0 : nt.startsWith(nq) ? 1 : nt.includes(nq) ? 2 : 9;
+            }));
+            if (puntaje < 9) hallados.push({ reg, puntaje });
+        }
+    }
+    hallados.sort((a, b) => a.puntaje - b.puntaje || String(a.reg.props.codigo).localeCompare(b.reg.props.codigo));
+    if (!hallados.length) {
+        lista.innerHTML = '<li class="vacio">Sin coincidencias. Revise el código.</li>';
         return;
     }
-    
-    mostrarEstado('Obteniendo tu ubicación...', 'info');
-    
+    lista.innerHTML = hallados.slice(0, 30).map((h, i) => `
+        <li><button type="button" role="option" data-i="${i}">
+            <span class="codigo">${esc(h.reg.capa === 'canales' ? nombreCanal(h.reg.props.nombre) : h.reg.props.codigo)}</span>
+            <span class="tipo">${esc(TIPO_BUSQUEDA[h.reg.capa])}</span></button></li>`).join('');
+    lista.querySelectorAll('button').forEach(b => b.addEventListener('click', () => irA(hallados[Number(b.dataset.i)].reg)));
+}
+
+function irA(reg) {
+    if (!visibles[reg.capa]) {
+        const chk = document.getElementById(`chk-${reg.capa}`);
+        chk.checked = true;
+        alternarCapa(reg.capa, true);
+    }
+    if (window.innerWidth <= 760) alternarPanel(false);
+    if (reg.latlng) {
+        alTerminarMovimiento(() => {
+            reg.layer.openPopup();
+            const el = reg.layer.getElement();
+            if (el) {
+                el.classList.add('mk-resaltado');
+                setTimeout(() => el.classList.remove('mk-resaltado'), 3000);
+            }
+        });
+        map.setView(reg.latlng, Math.max(map.getZoom(), 19));
+    } else {
+        alTerminarMovimiento(() => reg.layer.openPopup(reg.layer.getBounds().getCenter()));
+        map.fitBounds(reg.layer.getBounds(), { padding: [60, 60], maxZoom: 19 });
+    }
+}
+
+// Ejecuta fn al terminar el desplazamiento del mapa (o enseguida si no hubo)
+function alTerminarMovimiento(fn) {
+    let hecho = false;
+    const una = () => {
+        if (hecho) return;
+        hecho = true;
+        map.off('moveend', una);
+        fn();
+    };
+    map.on('moveend', una);
+    setTimeout(una, 700);
+}
+
+// ---------------------------------------------------------------------
+// Resumen
+// ---------------------------------------------------------------------
+function construirResumen() {
+    const n = c => (registro[c] || []).length;
+    const km = c => (registro[c] || []).reduce((s, r) => s + (Number(r.props.longitud_m || r.props.longitud_eje_m) || 0), 0) / 1000;
+    const inc = resumenDatos?.incidencias || {};
+    const totalInc = (inc.CORRECCION || 0) + (inc.ADVERTENCIA || 0) + (inc.ERROR || 0);
+    const meta = resumenDatos?.metadatos || {};
+
+    const cifras = [
+        [n('camaras').toLocaleString('es-BO'), 'cámaras de inspección'],
+        [n('sumideros').toLocaleString('es-BO'), 'sumideros'],
+        [`${numero(km('tuberias_camaras') + km('tuberias_sumideros'), 1)} km`, `de tuberías (${(n('tuberias_camaras') + n('tuberias_sumideros')).toLocaleString('es-BO')} tramos)`],
+        [`${numero(km('canales'), 1)} km`, `de canales (${n('progresivas')} secciones)`],
+        [`${numero(registro.area?.[0]?.props.area_ha, 1)} ha`, 'de área de estudio'],
+        [totalInc ? totalInc.toLocaleString('es-BO') : '—', 'incidencias de control registradas']
+    ];
+
+    const barras = [
+        ['Cámaras por accesibilidad', 'camaras', 'accesibilidad', ACCESIBILIDAD],
+        ['Cámaras por estado físico', 'camaras', 'estado_fisico', ESTADO],
+        ['Sumideros por condición', 'sumideros', 'condicion', CONDICION],
+        ['Secciones de canal por estado estructural', 'progresivas', 'estado_estructural', ESTADO]
+    ];
+
+    const htmlBarra = (titulo, capa, campo, clases) => {
+        const regs = registro[capa] || [];
+        const conteo = clases.map(([v, r, c]) => [r, c, regs.filter(x => x.props[campo] === v).length]).filter(x => x[2]);
+        const sin = regs.length - conteo.reduce((s, x) => s + x[2], 0);
+        if (sin) conteo.push(['Sin dato', SIN_DATO, sin]);
+        return `
+            <div class="distribucion">
+                <h3>${esc(titulo)}</h3>
+                <div class="barra-dist" role="img" aria-label="${esc(titulo)}">
+                    ${conteo.map(([, c, v]) => `<span style="width:${(100 * v / regs.length).toFixed(2)}%;background:${c}"></span>`).join('')}
+                </div>
+                <ul>${conteo.map(([r, c, v]) => `<li><i style="background:${c}"></i>${esc(r)}<span class="n">${v} · ${numero(100 * v / regs.length, 1)} %</span></li>`).join('')}</ul>
+            </div>`;
+    };
+
+    const certeza = resumenDatos?.certeza;
+    const htmlCerteza = certeza ? `
+        <div class="distribucion">
+            <h3>Nivel de certeza por capa</h3>
+            ${[['camara', 'Cámaras'], ['sumidero', 'Sumideros'], ['tuberia_camara', 'Tuberías de cámaras'],
+               ['tuberia_sumidero', 'Tuberías de sumideros'], ['canal_progresiva', 'Secciones de canal']].map(([k, nombre]) => {
+                const t = Object.values(certeza[k] || {}).reduce((s, v) => s + v, 0);
+                return `<div style="margin-bottom:8px"><div class="ayuda" style="margin:0 0 4px">${nombre}</div>
+                    <div class="barra-dist">${CERTEZA.map(([v, , c]) => (certeza[k]?.[v] ? `<span title="${etiqueta(v)}: ${certeza[k][v]}" style="width:${(100 * certeza[k][v] / t).toFixed(2)}%;background:${c}"></span>` : '')).join('')}</div></div>`;
+            }).join('')}
+            <ul>${CERTEZA.map(([, r, c]) => `<li><i style="background:${c}"></i>${r}</li>`).join('')}</ul>
+        </div>` : '';
+
+    document.getElementById('resumen').innerHTML = `
+        <div class="cifras">${cifras.map(([v, r]) => `<div class="cifra"><span class="valor">${v}</span><span class="rotulo">${esc(r)}</span></div>`).join('')}</div>
+        ${barras.map(b => htmlBarra(...b)).join('')}
+        ${htmlCerteza}
+        ${totalInc ? `<p class="pie-dato">Control de calidad: ${inc.CORRECCION || 0} correcciones con reglas documentadas, ${inc.ADVERTENCIA || 0} advertencias y ${inc.ERROR || 0} errores pendientes de verificación.</p>` : ''}
+        <p class="pie-dato">${meta.procesado ? `Base procesada el ${esc(meta.procesado)}. ` : ''}Fuente: ${fuenteDatos === 'supabase' ? 'base PostGIS en línea' : 'copia local de los datos'}.</p>`;
+}
+
+// ---------------------------------------------------------------------
+// Panel, pestañas y avisos
+// ---------------------------------------------------------------------
+function alternarPanel(abrir) {
+    const cerrado = abrir === undefined ? !document.body.classList.contains('panel-cerrado') : !abrir;
+    document.body.classList.toggle('panel-cerrado', cerrado);
+    document.getElementById('btnPanel').setAttribute('aria-expanded', String(!cerrado));
+    setTimeout(() => map.invalidateSize(), 260);
+}
+
+function mostrarPestana(nombre) {
+    document.querySelectorAll('.pestanas [role="tab"]').forEach(t => {
+        const activa = t.dataset.tab === nombre;
+        t.setAttribute('aria-selected', String(activa));
+        document.getElementById(`p-${t.dataset.tab}`).hidden = !activa;
+    });
+}
+
+let temporizadorAviso = null;
+function aviso(texto, tipo = '') {
+    const el = document.getElementById('aviso');
+    el.textContent = texto;
+    el.className = `aviso ${tipo}`;
+    el.hidden = false;
+    clearTimeout(temporizadorAviso);
+    temporizadorAviso = setTimeout(() => { el.hidden = true; }, 4500);
+}
+
+// ---------------------------------------------------------------------
+// Ubicación y rutas
+// ---------------------------------------------------------------------
+const origenIcon = L.divIcon({ className: '', html: '<div class="marcador-ruta origen"></div>', iconSize: [16, 16], iconAnchor: [8, 8] });
+const destinoIcon = L.divIcon({ className: '', html: '<div class="marcador-ruta destino"></div>', iconSize: [16, 16], iconAnchor: [8, 8] });
+
+function obtenerUbicacion(callback) {
+    if (!navigator.geolocation) {
+        aviso('Su navegador no permite obtener la ubicación.', 'error');
+        return;
+    }
+    aviso('Obteniendo su ubicación…');
     navigator.geolocation.getCurrentPosition(
-        (position) => {
-            const lat = position.coords.latitude;
-            const lon = position.coords.longitude;
-            
+        position => {
+            const { latitude: lat, longitude: lon } = position.coords;
             userLocation = [lat, lon];
-            
-            // Actualizar display de coordenadas
-            document.getElementById('coordenadas').textContent = 
-                `Lat: ${lat.toFixed(6)}, Lon: ${lon.toFixed(6)}`;
-            document.getElementById('locationInfo').style.display = 'block';
-            
-            // Centrar mapa en ubicación
-            map.setView([lat, lon], 16);
-            
-            // Agregar marcador de ubicación
-            if (window.userMarker) {
-                map.removeLayer(window.userMarker);
-            }
-            
+            if (window.userMarker) map.removeLayer(window.userMarker);
             window.userMarker = L.marker([lat, lon], {
-                icon: L.divIcon({
-                    className: 'user-location-marker',
-                    html: '<div style="background: #007bff; color: white; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>',
-                    iconSize: [20, 20],
-                    iconAnchor: [10, 10]
-                })
-            }).addTo(map);
-            
-            window.userMarker.bindPopup('📍 Tu ubicación actual').openPopup();
-            
-            mostrarEstado('✅ Ubicación obtenida correctamente', 'success');
+                icon: L.divIcon({ className: '', html: '<div class="marcador-usuario"></div>', iconSize: [16, 16], iconAnchor: [8, 8] })
+            }).addTo(map).bindTooltip('Su ubicación', { className: 'etiqueta-mapa' });
+            if (callback) callback();
+            else map.setView([lat, lon], 17);
+            aviso('Ubicación obtenida.');
         },
-        (error) => {
-            let mensaje = 'Error al obtener ubicación';
-            switch(error.code) {
-                case error.PERMISSION_DENIED:
-                    mensaje = 'Permiso de ubicación denegado';
-                    break;
-                case error.POSITION_UNAVAILABLE:
-                    mensaje = 'Ubicación no disponible';
-                    break;
-                case error.TIMEOUT:
-                    mensaje = 'Tiempo de espera agotado';
-                    break;
-            }
-            mostrarEstado('❌ ' + mensaje, 'error');
+        error => {
+            const mensajes = { 1: 'Permiso de ubicación denegado.', 2: 'Ubicación no disponible.', 3: 'Se agotó el tiempo de espera.' };
+            aviso(mensajes[error.code] || 'No se pudo obtener la ubicación.', 'error');
         },
-        {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0
-        }
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 }
 
-// Mostrar estado
-function mostrarEstado(mensaje, tipo) {
-    const status = document.getElementById('status');
-    status.textContent = mensaje;
-    status.className = 'status ' + tipo;
-    
-    setTimeout(() => {
-        status.style.display = 'none';
-    }, 5000);
-}
-
-// Mostrar estado de ruta
 function mostrarEstadoRuta(mensaje, tipo) {
     const status = document.getElementById('routeStatus');
     status.textContent = mensaje;
-    status.className = tipo;
-    
-    setTimeout(() => {
-        status.style.display = 'none';
-    }, 5000);
+    status.className = `mensaje ${tipo || ''}`;
 }
 
-// Alternar visibilidad de configuración
-function toggleConfig() {
-    const panel = document.getElementById('configPanel');
-    const btn = document.querySelector('.show-config');
-    
-    if (panel.style.display === 'block') {
-        panel.style.display = 'none';
-        btn.textContent = '⚙️ Mostrar Configuración';
+function fijarPunto(tipo, lat, lon) {
+    document.getElementById(`${tipo}Lat`).value = lat.toFixed(6);
+    document.getElementById(`${tipo}Lon`).value = lon.toFixed(6);
+    if (tipo === 'origen') {
+        if (origenMarker) map.removeLayer(origenMarker);
+        origenMarker = L.marker([lat, lon], { icon: origenIcon }).addTo(map).bindTooltip('Origen', { className: 'etiqueta-mapa' });
     } else {
-        panel.style.display = 'block';
-        btn.textContent = '⚙️ Ocultar Configuración';
+        if (destinoMarker) map.removeLayer(destinoMarker);
+        destinoMarker = L.marker([lat, lon], { icon: destinoIcon }).addTo(map).bindTooltip('Destino', { className: 'etiqueta-mapa' });
     }
 }
 
-// Alternar paneles
-function togglePanel(panelId) {
-    const panel = document.getElementById(panelId);
-    
-    if (panel.classList.contains('hidden')) {
-        // Abrir panel
-        panel.classList.remove('hidden');
-    } else {
-        // Cerrar panel
-        panel.classList.add('hidden');
-    }
-    
-    // Los botones siempre permanecen visibles
-}
-
-// Inicializar paneles - todos retráctiles por defecto
-function initPanels() {
-    // Ocultar todos los paneles al inicio
-    document.getElementById('controlPanel').classList.add('hidden');
-    document.getElementById('legendPanel').classList.add('hidden');
-    document.getElementById('creditsPanel').classList.add('hidden');
-    document.getElementById('routePanel').classList.add('hidden');
-    
-    // Mostrar todos los botones de toggle
-    document.getElementById('panelToggleBtn').classList.add('visible');
-    document.getElementById('legendToggleBtn').classList.add('visible');
-    document.getElementById('creditsToggleBtn').classList.add('visible');
-    document.getElementById('routeToggleBtn').classList.add('visible');
-}
-
-// FUNCIONES DE RUTEO
-
-// Usar ubicación actual como origen
 function usarUbicacionActual(tipo) {
-    if (!userLocation) {
-        obtenerUbicacion();
-        setTimeout(() => {
-            if (userLocation) {
-                document.getElementById('origenLat').value = userLocation[0].toFixed(6);
-                document.getElementById('origenLon').value = userLocation[1].toFixed(6);
-            }
-        }, 2000);
-    } else {
-        if (tipo === 'origen') {
-            document.getElementById('origenLat').value = userLocation[0].toFixed(6);
-            document.getElementById('origenLon').value = userLocation[1].toFixed(6);
-            mostrarEstadoRuta('✅ Ubicación actual establecida como origen', 'success');
-        }
-    }
+    const aplicar = () => {
+        fijarPunto(tipo, userLocation[0], userLocation[1]);
+        mostrarEstadoRuta('Su ubicación quedó como origen.', 'success');
+    };
+    if (userLocation) aplicar(); else obtenerUbicacion(aplicar);
 }
 
-// Seleccionar punto en el mapa
 function seleccionarEnMapa(tipo) {
     seleccionandoPunto = tipo;
-    mostrarEstadoRuta(`🎯 Haz clic en el mapa para seleccionar el punto ${tipo === 'origen' ? 'de origen' : 'de destino'}`, 'info');
-    
-    // Cambiar cursor del mapa
-    document.getElementById('map').style.cursor = 'crosshair';
+    mostrarEstadoRuta(`Haga clic en el mapa para fijar el ${tipo}.`, '');
+    map.getContainer().style.cursor = 'crosshair';
+    if (window.innerWidth <= 760) alternarPanel(false);
 }
 
-// Agregar punto seleccionado
 function agregarPuntoSeleccionado(latlng) {
-    if (!seleccionandoPunto) return;
-    
-    const lat = latlng.lat;
-    const lon = latlng.lng;
-    
-    if (seleccionandoPunto === 'origen') {
-        document.getElementById('origenLat').value = lat.toFixed(6);
-        document.getElementById('origenLon').value = lon.toFixed(6);
-        
-        // Agregar marcador visual
-        if (origenMarker) map.removeLayer(origenMarker);
-        origenMarker = L.marker([lat, lon], { icon: origenIcon }).addTo(map);
-        origenMarker.bindPopup('📍 Punto de origen').openPopup();
-        
-        mostrarEstadoRuta('✅ Punto de origen seleccionado', 'success');
-    } else if (seleccionandoPunto === 'destino') {
-        document.getElementById('destinoLat').value = lat.toFixed(6);
-        document.getElementById('destinoLon').value = lon.toFixed(6);
-        
-        // Agregar marcador visual
-        if (destinoMarker) map.removeLayer(destinoMarker);
-        destinoMarker = L.marker([lat, lon], { icon: destinoIcon }).addTo(map);
-        destinoMarker.bindPopup('🏁 Punto de destino').openPopup();
-        
-        mostrarEstadoRuta('✅ Punto de destino seleccionado', 'success');
-    }
-    
-    // Restaurar cursor
-    document.getElementById('map').style.cursor = '';
+    fijarPunto(seleccionandoPunto, latlng.lat, latlng.lng);
+    mostrarEstadoRuta(`${seleccionandoPunto === 'origen' ? 'Origen' : 'Destino'} fijado en el mapa.`, 'success');
+    map.getContainer().style.cursor = '';
     seleccionandoPunto = null;
+    if (window.innerWidth <= 760) alternarPanel(true);
 }
 
-// Calcular ruta usando OpenRouteService con rutas alternativas
+function comoLlegar(reg) {
+    const c = centroDe(reg);
+    fijarPunto('destino', c.lat, c.lng);
+    map.closePopup();
+    mostrarPestana('rutas');
+    alternarPanel(true);
+    if (userLocation) {
+        fijarPunto('origen', userLocation[0], userLocation[1]);
+        calcularRuta();
+    } else {
+        mostrarEstadoRuta(`Destino: ${reg.props.codigo || nombreCanal(reg.props.nombre)}. Indique el origen con «Mi ubicación» o en el mapa.`, '');
+    }
+}
+
 async function calcularRuta() {
     const origenLat = parseFloat(document.getElementById('origenLat').value);
     const origenLon = parseFloat(document.getElementById('origenLon').value);
     const destinoLat = parseFloat(document.getElementById('destinoLat').value);
     const destinoLon = parseFloat(document.getElementById('destinoLon').value);
     const profile = document.getElementById('routeProfile').value;
-    
-    // Validar coordenadas
-    if (isNaN(origenLat) || isNaN(origenLon) || isNaN(destinoLat) || isNaN(destinoLon)) {
-        mostrarEstadoRuta('❌ Por favor ingresa coordenadas válidas para origen y destino', 'error');
+
+    if ([origenLat, origenLon, destinoLat, destinoLon].some(isNaN)) {
+        mostrarEstadoRuta('Indique coordenadas válidas para el origen y el destino.', 'error');
         return;
     }
-    
-    mostrarEstadoRuta('🔄 Calculando rutas alternativas...', 'info');
-    
+    mostrarEstadoRuta('Calculando rutas…', '');
+
     try {
-        // Convertir perfil para OSRM
         const osrmProfile = profile === 'driving-car' ? 'driving' : profile === 'cycling-regular' ? 'cycling' : 'foot';
-        
-        // Solicitar rutas alternativas
-        const url = `https://router.project-osrm.org/route/v1/${osrmProfile}/${origenLon},${origenLat};${destinoLon},${destinoLat}?overview=full&geometries=geojson&alternatives=true&steps=true`;
-        
+        const url = `https://router.project-osrm.org/route/v1/${osrmProfile}/${origenLon},${origenLat};${destinoLon},${destinoLat}?overview=full&geometries=geojson&alternatives=true`;
         const response = await fetch(url);
-        
-        if (!response.ok) throw new Error('Error al calcular ruta');
-        
+        if (!response.ok) throw new Error('el servicio de rutas no respondió');
         const data = await response.json();
-        
-        if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
-            throw new Error('No se pudo encontrar una ruta');
-        }
-        
-        const routes = data.routes;
-        currentRoutes = routes;
-        
-        // Limpiar rutas anteriores
-        routeLayers.forEach(layer => map.removeLayer(layer));
+        if (data.code !== 'Ok' || !data.routes?.length) throw new Error('no se encontró un recorrido');
+
+        currentRoutes = data.routes.slice(0, 3);
+        routeLayers.forEach(l => map.removeLayer(l));
         routeLayers = [];
-        
-        // Colores para diferentes rutas
-        const routeColors = [
-            { color: '#667eea', name: 'Ruta Principal', weight: 6, opacity: 0.8 },
-            { color: '#28a745', name: 'Ruta Alternativa 1', weight: 5, opacity: 0.7 },
-            { color: '#ffc107', name: 'Ruta Alternativa 2', weight: 5, opacity: 0.7 }
+        const estilos = [
+            { color: '#1d5a85', nombre: 'Ruta principal', weight: 6, opacity: 0.85 },
+            { color: '#5f93bd', nombre: 'Alternativa 1', weight: 5, opacity: 0.75 },
+            { color: '#8fb3cf', nombre: 'Alternativa 2', weight: 5, opacity: 0.75 }
         ];
-        
-        // Dibujar todas las rutas en el mapa
-        routes.forEach((route, index) => {
-            if (index < 3) { // Máximo 3 rutas
-                const coordinates = route.geometry.coordinates.map(coord => [coord[1], coord[0]]);
-                const style = routeColors[index];
-                
-                const routeLayer = L.polyline(coordinates, {
-                    color: style.color,
-                    weight: style.weight,
-                    opacity: style.opacity,
-                    smoothFactor: 1
-                }).addTo(map);
-                
-                // Agregar popup con información de la ruta
-                const distanceKm = (route.distance / 1000).toFixed(2);
-                const durationMin = Math.round(route.duration / 60);
-                
-                routeLayer.bindPopup(`
-                    <div style="text-align: center;">
-                        <strong>${style.name}</strong><br>
-                        📏 ${distanceKm} km<br>
-                        ⏱️ ${durationMin} min
-                    </div>
-                `);
-                
-                routeLayers.push(routeLayer);
-            }
+        const todas = [];
+        currentRoutes.slice().reverse().forEach((route, k) => {
+            const i = currentRoutes.length - 1 - k;
+            const coords = route.geometry.coordinates.map(c => [c[1], c[0]]);
+            todas.push(...coords);
+            const e = estilos[i];
+            routeLayers.push(L.polyline(coords, { color: e.color, weight: e.weight, opacity: e.opacity })
+                .bindTooltip(`${e.nombre}: ${(route.distance / 1000).toFixed(2)} km`, { sticky: true, className: 'etiqueta-mapa' })
+                .addTo(map));
         });
-        
-        // Agregar marcadores de origen y destino si no existen
-        if (!origenMarker) {
-            origenMarker = L.marker([origenLat, origenLon], { icon: origenIcon }).addTo(map);
-            origenMarker.bindPopup('📍 Origen');
-        }
-        
-        if (!destinoMarker) {
-            destinoMarker = L.marker([destinoLat, destinoLon], { icon: destinoIcon }).addTo(map);
-            destinoMarker.bindPopup('🏁 Destino');
-        }
-        
-        // Ajustar vista a todas las rutas
-        const allCoordinates = [];
-        routes.forEach(route => {
-            route.geometry.coordinates.forEach(coord => {
-                allCoordinates.push([coord[1], coord[0]]);
-            });
-        });
-        
-        if (allCoordinates.length > 0) {
-            const bounds = L.latLngBounds(allCoordinates);
-            map.fitBounds(bounds, { padding: [50, 50] });
-        }
-        
-        // Mostrar información de todas las rutas
-        mostrarInformacionRutas(routes, profile);
-        
-        document.getElementById('btnLimpiarRuta').style.display = 'block';
-        
-        const numRutas = Math.min(routes.length, 3);
-        mostrarEstadoRuta(`✅ Se encontraron ${numRutas} ruta(s) alternativa(s)`, 'success');
-        
+        if (!origenMarker) fijarPunto('origen', origenLat, origenLon);
+        if (!destinoMarker) fijarPunto('destino', destinoLat, destinoLon);
+        map.fitBounds(L.latLngBounds(todas), { padding: [50, 50] });
+
+        const info = document.getElementById('routeInfo');
+        const modo = { 'driving-car': 'vehículo', 'cycling-regular': 'bicicleta', 'foot-walking': 'a pie' }[profile];
+        info.innerHTML = currentRoutes.map((r, i) => `
+            <div class="ruta" style="border-left-color:${estilos[i].color}">
+                <strong>${estilos[i].nombre}</strong>
+                ${(r.distance / 1000).toFixed(2)} km · ${Math.round(r.duration / 60)} min en ${modo}
+            </div>`).join('');
+        info.hidden = false;
+        document.getElementById('btnLimpiarRuta').hidden = false;
+        mostrarEstadoRuta(`${currentRoutes.length === 1 ? 'Se encontró 1 ruta' : `Se encontraron ${currentRoutes.length} rutas`}.`, 'success');
     } catch (error) {
-        console.error('Error:', error);
-        mostrarEstadoRuta('❌ Error al calcular ruta: ' + error.message, 'error');
+        mostrarEstadoRuta(`No se pudo calcular la ruta: ${error.message}.`, 'error');
     }
 }
 
-// Mostrar información de múltiples rutas
-function mostrarInformacionRutas(routes, profile) {
-    const routeInfoDiv = document.getElementById('routeInfo');
-    routeInfoDiv.innerHTML = '<h4>📊 Rutas Encontradas</h4>';
-    
-    const routeNames = ['Principal', 'Alternativa 1', 'Alternativa 2'];
-    const routeColors = ['#667eea', '#28a745', '#ffc107'];
-    
-    routes.forEach((route, index) => {
-        if (index < 3) {
-            const distanceKm = (route.distance / 1000).toFixed(2);
-            const durationMin = Math.round(route.duration / 60);
-            
-            routeInfoDiv.innerHTML += `
-                <div class="route-detail" style="border-left: 4px solid ${routeColors[index]}; padding-left: 10px; margin: 10px 0;">
-                    <strong style="color: ${routeColors[index]};">Ruta ${routeNames[index]}</strong><br>
-                    📏 Distancia: <span>${distanceKm} km</span><br>
-                    ⏱️ Tiempo: <span>${durationMin} minutos</span><br>
-                    🚀 Tipo: <span>${getProfileName(profile)}</span>
-                </div>
-            `;
-        }
-    });
-    
-    routeInfoDiv.style.display = 'block';
-}
-
-// Obtener nombre del perfil de ruta
-function getProfileName(profile) {
-    const profiles = {
-        'driving-car': '🚗 Auto',
-        'cycling-regular': '🚴 Bicicleta',
-        'foot-walking': '🚶 A pie'
-    };
-    return profiles[profile] || profile;
-}
-
-// Limpiar ruta
 function limpiarRuta() {
-    // Limpiar todas las rutas
-    routeLayers.forEach(layer => map.removeLayer(layer));
+    routeLayers.forEach(l => map.removeLayer(l));
     routeLayers = [];
-    
-    if (origenMarker) {
-        map.removeLayer(origenMarker);
-        origenMarker = null;
-    }
-    
-    if (destinoMarker) {
-        map.removeLayer(destinoMarker);
-        destinoMarker = null;
-    }
-    
-    document.getElementById('origenLat').value = '';
-    document.getElementById('origenLon').value = '';
-    document.getElementById('destinoLat').value = '';
-    document.getElementById('destinoLon').value = '';
-    document.getElementById('routeInfo').style.display = 'none';
-    document.getElementById('btnLimpiarRuta').style.display = 'none';
-    
+    [origenMarker, destinoMarker].forEach(m => m && map.removeLayer(m));
+    origenMarker = destinoMarker = null;
+    ['origenLat', 'origenLon', 'destinoLat', 'destinoLon'].forEach(id => { document.getElementById(id).value = ''; });
+    document.getElementById('routeInfo').hidden = true;
+    document.getElementById('btnLimpiarRuta').hidden = true;
     currentRoutes = [];
-    
-    mostrarEstadoRuta('🗑️ Rutas limpiadas', 'info');
+    mostrarEstadoRuta('', '');
 }
 
-// Inicializar aplicación al cargar
-document.addEventListener('DOMContentLoaded', function() {
+// ---------------------------------------------------------------------
+// Inicio
+// ---------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+    if (window.innerWidth <= 760) document.body.classList.add('panel-cerrado');
     initMap();
-    
-    // Cargar capa automáticamente al iniciar
-    setTimeout(() => {
-        cargarCapa();
-    }, 500);
-    
-    // Ajustar responsive en cambio de tamaño de ventana
-    window.addEventListener('resize', function() {
-        // Los paneles siempre son retráctiles en cualquier tamaño de pantalla
-        // Ajustamos el posicionamiento del zoom para que esté centrado verticalmente
-        const zoomControl = document.querySelector('.leaflet-control-zoom');
-        if (zoomControl) {
-            zoomControl.style.position = 'fixed';
-            zoomControl.style.top = '50%';
-            zoomControl.style.transform = 'translateY(-50%)';
-            
-            if (window.innerWidth <= 768) {
-                zoomControl.style.right = '10px';
-            } else {
-                zoomControl.style.right = '20px';
-            }
-        }
+    document.getElementById('btnPanel').addEventListener('click', () => alternarPanel());
+    document.querySelectorAll('.pestanas [role="tab"]').forEach(t => t.addEventListener('click', () => mostrarPestana(t.dataset.tab)));
+    document.getElementById('buscador').addEventListener('input', e => buscar(e.target.value));
+    document.getElementById('buscador').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.querySelector('#resultados button')?.click();
     });
+    cargarCapa();
 });
 
-// ==================== FUNCIONES PARA GENERACIÓN DE FICHA PDF ====================
+// =====================================================================
+// Ficha técnica en PDF
+// =====================================================================
 
-/**
- * Carga una imagen desde URL usando fetch con proxy para evitar CORS
- * Retorna una promesa con el DataURL en base64
- */
+// Carga una imagen como DataURL. googleusercontent permite CORS; los
+// proxies quedan como respaldo para otros orígenes.
 async function cargarImagenBase64(url) {
     if (!url) return null;
-    
-    // Convertir URL de Google Drive
     const imageUrl = convertDriveUrl(url);
-    
-    // Lista de proxies a intentar
     const proxies = [
-        (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-        (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-        (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`
+        u => u,
+        u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+        u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+        u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`
     ];
-    
-    // Intentar con cada proxy
-    for (let i = 0; i < proxies.length; i++) {
+    for (const proxy of proxies) {
         try {
-            const proxyUrl = proxies[i](imageUrl);
-            console.log(`Intentando proxy ${i + 1}: ${proxyUrl}`);
-            
-            const response = await fetch(proxyUrl, {
-                method: 'GET',
-                headers: {
-                    'Accept': 'image/*'
-                }
-            });
-            
-            if (!response.ok) {
-                console.log(`Proxy ${i + 1} falló con status: ${response.status}`);
-                continue;
-            }
-            
+            const response = await fetch(proxy(imageUrl), { headers: { Accept: 'image/*' } });
+            if (!response.ok) continue;
             const blob = await response.blob();
-            
-            // Verificar que sea una imagen válida
-            if (!blob.type.startsWith('image/')) {
-                console.log(`Proxy ${i + 1} no devolvió una imagen válida: ${blob.type}`);
-                continue;
-            }
-            
-            // Convertir Blob a DataURL
-            return new Promise((resolve, reject) => {
+            if (!blob.type.startsWith('image/')) continue;
+            return await new Promise((resolve, reject) => {
                 const reader = new FileReader();
-                reader.onloadend = () => {
-                    console.log('Imagen cargada exitosamente');
-                    resolve(reader.result);
-                };
-                reader.onerror = () => {
-                    console.log('Error al leer blob');
-                    reject(new Error('Error al leer imagen'));
-                };
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = () => reject(new Error('Error al leer la imagen'));
                 reader.readAsDataURL(blob);
             });
-            
         } catch (error) {
-            console.log(`Error con proxy ${i + 1}:`, error.message);
             continue;
         }
     }
-    
-    // Fallback: Intentar carga directa con Image + Canvas (puede fallar por CORS)
-    console.log('Intentando carga directa con Image...');
-    return new Promise((resolve) => {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        
-        img.onload = function() {
-            try {
-                const canvas = document.createElement('canvas');
-                canvas.width = img.naturalWidth;
-                canvas.height = img.naturalHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-                console.log('Imagen cargada por fallback');
-                resolve(dataUrl);
-            } catch (e) {
-                console.log('Canvas tainted - no se pudo obtener imagen:', e);
-                resolve(null);
-            }
-        };
-        
-        img.onerror = function() {
-            console.log('Error al cargar imagen directamente');
-            resolve(null);
-        };
-        
-        // Agregar timestamp para evitar caché
-        img.src = imageUrl + (imageUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
-        
-        // Timeout de 5 segundos
-        setTimeout(() => {
-            if (!img.complete) {
-                console.log('Timeout al cargar imagen');
-                resolve(null);
-            }
-        }, 5000);
-    });
+    return null;
 }
 
-/**
- * Genera un mapa estático usando tiles de OpenStreetMap
- * Retorna un DataURL de la imagen del mapa
- */
-async function generarMapaEstatico(lat, lon, zoom = 17, width = 300, height = 200) {
-    return new Promise((resolve) => {
+// Mapa de ubicación a partir de teselas de OpenStreetMap (3 × 3)
+async function generarMapaEstatico(lat, lon, zoom = 17, width = 400, height = 280) {
+    return new Promise(resolve => {
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
-        
-        // Convertir lat/lon a tile coordinates
         const n = Math.pow(2, zoom);
-        const xtile = Math.floor((parseFloat(lon) + 180) / 360 * n);
-        const ytile = Math.floor((1 - Math.log(Math.tan(parseFloat(lat) * Math.PI / 180) + 1 / Math.cos(parseFloat(lat) * Math.PI / 180)) / Math.PI) / 2 * n);
-        
-        // Calcular offset dentro del tile
-        const xOffset = ((parseFloat(lon) + 180) / 360 * n - xtile) * 256;
-        const yOffset = ((1 - Math.log(Math.tan(parseFloat(lat) * Math.PI / 180) + 1 / Math.cos(parseFloat(lat) * Math.PI / 180)) / Math.PI) / 2 * n - ytile) * 256;
-        
-        // Cargar tiles alrededor del punto central
-        const tilesLoaded = [];
-        const tilesNeeded = 9; // 3x3 grid
-        let loadedCount = 0;
-        
-        // Dibujar fondo mientras cargan los tiles
-        ctx.fillStyle = '#e8e8e8';
+        const xf = (lon + 180) / 360 * n;
+        const yf = (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n;
+        const xtile = Math.floor(xf), ytile = Math.floor(yf);
+        const xOffset = (xf - xtile) * 256, yOffset = (yf - ytile) * 256;
+        ctx.fillStyle = '#e9edf1';
         ctx.fillRect(0, 0, width, height);
-        
-        // Cargar 3x3 grid de tiles
+        let cargadas = 0;
+        const terminar = () => {
+            dibujarMarcador(ctx, width / 2, height / 2);
+            resolve(canvas.toDataURL('image/png'));
+        };
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
-                const tx = xtile + dx;
-                const ty = ytile + dy;
-                const tileUrl = `https://tile.openstreetmap.org/${zoom}/${tx}/${ty}.png`;
-                
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
-                
-                img.onload = function() {
-                    const drawX = (dx + 1) * 256 - xOffset - (256 * 1.5 - width / 2);
-                    const drawY = (dy + 1) * 256 - yOffset - (256 * 1.5 - height / 2);
-                    ctx.drawImage(img, drawX, drawY, 256, 256);
-                    loadedCount++;
-                    
-                    if (loadedCount === tilesNeeded) {
-                        // Todos los tiles cargados, agregar marcador
-                        dibujarMarcador(ctx, width / 2, height / 2);
-                        resolve(canvas.toDataURL('image/png'));
-                    }
+                img.onload = () => {
+                    ctx.drawImage(img, (dx + 1) * 256 - xOffset - (384 - width / 2), (dy + 1) * 256 - yOffset - (384 - height / 2), 256, 256);
+                    if (++cargadas === 9) terminar();
                 };
-                
-                img.onerror = function() {
-                    loadedCount++;
-                    if (loadedCount === tilesNeeded) {
-                        dibujarMarcador(ctx, width / 2, height / 2);
-                        resolve(canvas.toDataURL('image/png'));
-                    }
-                };
-                
-                img.src = tileUrl;
+                img.onerror = () => { if (++cargadas === 9) terminar(); };
+                img.src = `https://tile.openstreetmap.org/${zoom}/${xtile + dx}/${ytile + dy}.png`;
             }
         }
-        
-        // Timeout de seguridad
-        setTimeout(() => {
-            if (loadedCount < tilesNeeded) {
-                dibujarMarcador(ctx, width / 2, height / 2);
-                resolve(canvas.toDataURL('image/png'));
-            }
-        }, 5000);
+        setTimeout(() => { if (cargadas < 9) terminar(); }, 6000);
     });
 }
 
-/**
- * Dibuja un marcador de ubicación en el canvas
- */
 function dibujarMarcador(ctx, x, y) {
-    // Sombra del marcador
     ctx.beginPath();
-    ctx.ellipse(x, y + 25, 10, 5, 0, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.arc(x, y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
     ctx.fill();
-    
-    // Pin del marcador
     ctx.beginPath();
-    ctx.moveTo(x, y + 20);
-    ctx.bezierCurveTo(x - 15, y + 5, x - 15, y - 15, x, y - 20);
-    ctx.bezierCurveTo(x + 15, y - 15, x + 15, y + 5, x, y + 20);
-    ctx.fillStyle = '#dc3545';
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#a8423a';
     ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#13283b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 9, 0, Math.PI * 2);
     ctx.stroke();
-    
-    // Círculo interior
-    ctx.beginPath();
-    ctx.arc(x, y - 5, 6, 0, Math.PI * 2);
-    ctx.fillStyle = '#fff';
-    ctx.fill();
 }
 
-/**
- * Función principal para generar la Ficha Técnica en PDF
- * Incluye imagen de cámara y mapa de ubicación lado a lado
- */
-async function generarFichaPDF(data) {
-    // Mostrar indicador de carga
-    const loadingDiv = document.createElement('div');
-    loadingDiv.id = 'pdfLoading';
-    loadingDiv.innerHTML = `
-        <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000;">
-            <div style="background: white; padding: 30px 50px; border-radius: 15px; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,0.3);">
-                <div style="font-size: 40px; margin-bottom: 15px;">📄</div>
-                <div style="font-size: 18px; font-weight: bold; color: #333;">Generando Ficha Técnica...</div>
-                <div style="font-size: 14px; color: #666; margin-top: 10px;">Cargando imágenes y datos</div>
-                <div style="margin-top: 20px; width: 200px; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden;">
-                    <div style="width: 0%; height: 100%; background: linear-gradient(90deg, #667eea, #764ba2); border-radius: 3px; animation: loadingBar 2s ease-in-out infinite;"></div>
-                </div>
-            </div>
-        </div>
-        <style>
-            @keyframes loadingBar {
-                0% { width: 0%; }
-                50% { width: 70%; }
-                100% { width: 100%; }
-            }
-        </style>
-    `;
-    document.body.appendChild(loadingDiv);
-    
+function hexToRgb(hex) {
+    const r = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return r ? [parseInt(r[1], 16), parseInt(r[2], 16), parseInt(r[3], 16)] : [29, 90, 133];
+}
+
+// Texto apto para las fuentes estándar del PDF (sin caracteres fuera de Latin-1)
+function pdfTexto(t) {
+    return String(t ?? '').replace(/→/g, '->').replace(/[^\x00-\xFF]/g, '');
+}
+
+async function generarFichaPDF(reg) {
+    const carga = document.createElement('div');
+    carga.className = 'carga';
+    carga.setAttribute('role', 'alertdialog');
+    carga.innerHTML = `<div class="carga__caja"><strong>Generando ficha técnica</strong><span>Preparando fotografía y mapa de ubicación…</span><div class="carga__barra"></div></div>`;
+    document.body.appendChild(carga);
+
     try {
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF('p', 'mm', 'letter'); // Tamaño carta vertical
-        
-        const pageWidth = doc.internal.pageSize.getWidth();
-        const pageHeight = doc.internal.pageSize.getHeight();
-        const margin = 12; // Margen lateral
-        const contentWidth = pageWidth - (margin * 2);
-        
-        // Colores según accesibilidad
-        const colorHex = data.color || '#17a2b8';
-        const rgb = hexToRgb(colorHex);
-        
-        // ========== ENCABEZADO ==========
-        // Fondo del encabezado
-        doc.setFillColor(26, 82, 118);
-        doc.rect(0, 0, pageWidth, 32, 'F');
-        
-        // Logo (círculo blanco)
-        doc.setFillColor(255, 255, 255);
-        doc.circle(22, 16, 10, 'F');
-        
-        // Texto del logo
-        doc.setTextColor(26, 82, 118);
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'bold');
-        doc.text('GAMO', 22, 14, { align: 'center' });
-        doc.text('ORURO', 22, 18, { align: 'center' });
-        
-        // Título
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(16);
-        doc.setFont('helvetica', 'bold');
-        doc.text('FICHA TÉCNICA - CÁMARA PLUVIAL', 38, 13);
-        
-        // Subtítulo
-        doc.setFontSize(9);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Sistema de Drenaje Pluvial - Gobierno Autónomo Municipal de Oruro', 38, 21);
-        
-        // ========== BARRA DE CÓDIGO Y ESTADO ==========
-        doc.setFillColor(rgb.r, rgb.g, rgb.b);
-        doc.rect(0, 32, pageWidth, 15, 'F');
-        
-        // Código de cámara
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'bold');
-        doc.text(`CÁMARA: ${data.cod_cam}`, margin, 42);
-        
-        // Badge de estado
-        doc.setFillColor(255, 255, 255);
-        const estadoText = data.accesibili.toUpperCase();
-        const estadoWidth = doc.getTextWidth(estadoText) + 12;
-        doc.roundedRect(pageWidth - estadoWidth - margin, 36, estadoWidth, 8, 2, 2, 'F');
-        doc.setTextColor(rgb.r, rgb.g, rgb.b);
-        doc.setFontSize(8);
-        doc.text(estadoText, pageWidth - margin - 6, 41, { align: 'right' });
-        
-        // ========== SECCIÓN DE IMÁGENES (FOTO Y MAPA) ==========
-        let yPos = 52;
-        
-        // Ancho de cada imagen (lado a lado con espacio entre ellas)
-        const imageWidth = (contentWidth - 6) / 2; // 6mm de espacio entre imágenes
-        const imageHeight = 50;
-        
-        // Posiciones X
-        const leftImageX = margin;
-        const rightImageX = margin + imageWidth + 6;
-        
-        // Título Fotografía
-        doc.setTextColor(26, 82, 118);
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'bold');
-        doc.text('FOTOGRAFÍA', leftImageX, yPos);
-        
-        // Título Ubicación
-        doc.text('UBICACIÓN', rightImageX, yPos);
-        
-        yPos += 4;
-        
-        // ===== RECUADRO DE FOTOGRAFÍA (IZQUIERDA) =====
-        doc.setDrawColor(rgb.r, rgb.g, rgb.b);
-        doc.setLineWidth(0.8);
-        doc.setFillColor(245, 245, 245);
-        doc.roundedRect(leftImageX, yPos, imageWidth, imageHeight, 2, 2, 'FD');
-        
-        // Cargar imagen de la cámara
-        let fotoBase64 = null;
-        if (data.fotoUrl) {
-            console.log('Cargando imagen de cámara:', data.fotoUrl);
-            fotoBase64 = await cargarImagenBase64(data.fotoUrl);
-        }
-        
-        if (fotoBase64) {
-            // Calcular dimensiones para que la imagen quepa en el recuadro
-            const imgPadding = 2;
-            const maxImgWidth = imageWidth - (imgPadding * 2);
-            const maxImgHeight = imageHeight - (imgPadding * 2);
-            
-            // Insertar imagen
-            try {
-                doc.addImage(fotoBase64, 'JPEG', leftImageX + imgPadding, yPos + imgPadding, maxImgWidth, maxImgHeight, undefined, 'FAST');
-            } catch (e) {
-                console.error('Error al insertar imagen de cámara:', e);
-                // Dibujar placeholder
-                doc.setTextColor(150, 150, 150);
-                doc.setFontSize(9);
-                doc.text('📷 Imagen no disponible', leftImageX + imageWidth/2, yPos + imageHeight/2, { align: 'center' });
-            }
-        } else {
-            // Dibujar placeholder si no hay imagen
-            doc.setTextColor(150, 150, 150);
-            doc.setFontSize(9);
-            doc.text('📷 Imagen no disponible', leftImageX + imageWidth/2, yPos + imageHeight/2, { align: 'center' });
-        }
-        
-        // ===== RECUADRO DE MAPA (DERECHA) =====
-        doc.setDrawColor(41, 128, 185);
-        doc.setFillColor(232, 244, 248);
-        doc.roundedRect(rightImageX, yPos, imageWidth, imageHeight, 2, 2, 'FD');
-        
-        // Generar mapa estático
-        console.log('Generando mapa estático para:', data.lat, data.lon);
-        const mapBase64 = await generarMapaEstatico(data.lat, data.lon, 17, 400, 280);
-        
-        if (mapBase64) {
-            const imgPadding = 2;
-            const maxImgWidth = imageWidth - (imgPadding * 2);
-            const maxImgHeight = imageHeight - (imgPadding * 2);
-            
-            try {
-                doc.addImage(mapBase64, 'PNG', rightImageX + imgPadding, yPos + imgPadding, maxImgWidth, maxImgHeight, undefined, 'FAST');
-            } catch (e) {
-                console.error('Error al insertar mapa:', e);
-                // Dibujar placeholder
-                doc.setTextColor(21, 87, 36);
-                doc.setFontSize(16);
-                doc.text('📍', rightImageX + imageWidth/2, yPos + imageHeight/2 - 5, { align: 'center' });
-                doc.setFontSize(7);
-                doc.text(`Lat: ${data.lat}`, rightImageX + imageWidth/2, yPos + imageHeight/2 + 5, { align: 'center' });
-                doc.text(`Lon: ${data.lon}`, rightImageX + imageWidth/2, yPos + imageHeight/2 + 10, { align: 'center' });
-            }
-        } else {
-            // Placeholder del mapa
-            doc.setTextColor(21, 87, 36);
-            doc.setFontSize(16);
-            doc.text('📍', rightImageX + imageWidth/2, yPos + imageHeight/2 - 5, { align: 'center' });
-            doc.setFontSize(7);
-            doc.text(`Lat: ${data.lat}`, rightImageX + imageWidth/2, yPos + imageHeight/2 + 5, { align: 'center' });
-            doc.text(`Lon: ${data.lon}`, rightImageX + imageWidth/2, yPos + imageHeight/2 + 10, { align: 'center' });
-        }
-        
-        // ========== DATOS TÉCNICOS ==========
-        yPos += imageHeight + 8;
-        
-        doc.setTextColor(26, 82, 118);
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'bold');
-        doc.text('DATOS TÉCNICOS', margin, yPos);
-        
-        // Línea separadora
-        doc.setDrawColor(200, 200, 200);
-        doc.setLineWidth(0.3);
-        doc.line(margin, yPos + 2, pageWidth - margin, yPos + 2);
-        
-        yPos += 8;
-        
-        // Datos en grid 2 columnas
-        const datos = [
-            { label: 'CÓDIGO', value: data.cod_cam },
-            { label: 'ACCESIBILIDAD', value: data.accesibili },
-            { label: 'LOCALIZACIÓN', value: data.localizaci },
-            { label: 'RASANTE', value: data.rasante },
-            { label: 'ESTADO', value: data.estado },
-            { label: 'COORDENADAS', value: data.coordenadas }
-        ];
-        
-        const colWidth = (contentWidth - 6) / 2;
-        let col = 0;
-        let row = 0;
-        
-        datos.forEach((dato, index) => {
-            const x = margin + (col * (colWidth + 6));
-            const y = yPos + (row * 15);
-            
-            // Fondo del campo
-            doc.setFillColor(248, 249, 250);
-            doc.roundedRect(x, y, colWidth, 12, 1.5, 1.5, 'F');
-            
-            // Borde izquierdo de color
-            doc.setFillColor(rgb.r, rgb.g, rgb.b);
-            doc.rect(x, y, 2.5, 12, 'F');
-            
-            // Label
-            doc.setFillColor(26, 82, 118);
-            doc.roundedRect(x + 2.5, y, 28, 12, 0, 0, 'F');
-            doc.setTextColor(255, 255, 255);
-            doc.setFontSize(6);
-            doc.setFont('helvetica', 'bold');
-            doc.text(dato.label, x + 4, y + 7);
-            
-            // Value
-            doc.setTextColor(51, 51, 51);
-            doc.setFontSize(7);
-            doc.setFont('helvetica', 'normal');
-            const maxValueWidth = colWidth - 35;
-            let valueText = dato.value || 'Sin datos';
-            // Truncar si es muy largo
-            while (doc.getTextWidth(valueText) > maxValueWidth && valueText.length > 3) {
-                valueText = valueText.substring(0, valueText.length - 4) + '...';
-            }
-            doc.text(valueText, x + 32, y + 7);
-            
-            col++;
-            if (col >= 2) {
-                col = 0;
-                row++;
-            }
-        });
-        
-        // ========== COORDENADAS GEOGRÁFICAS ==========
-        yPos += (Math.ceil(datos.length / 2) * 15) + 10;
-        
-        // Fondo de sección
-        doc.setFillColor(232, 244, 248);
-        doc.roundedRect(margin, yPos - 3, contentWidth, 38, 2, 2, 'F');
-        
-        doc.setTextColor(26, 82, 118);
-        doc.setFontSize(10);
-        doc.setFont('helvetica', 'bold');
-        doc.text('COORDENADAS GEOGRÁFICAS', margin + 4, yPos + 5);
-        
-        // Coordenadas en 3 columnas
-        const coordWidth = (contentWidth - 16) / 3;
-        const coords = [
-            { label: 'LATITUD', value: data.lat },
-            { label: 'LONGITUD', value: data.lon },
-            { label: 'ALTITUD', value: '3,706 m.s.n.m.' }
-        ];
-        
-        coords.forEach((coord, index) => {
-            const x = margin + 4 + (index * (coordWidth + 4));
-            const y = yPos + 12;
-            
-            // Recuadro blanco
-            doc.setFillColor(255, 255, 255);
-            doc.roundedRect(x, y, coordWidth, 18, 2, 2, 'F');
-            
-            // Label
-            doc.setTextColor(102, 102, 102);
-            doc.setFontSize(6);
-            doc.text(coord.label, x + coordWidth/2, y + 5, { align: 'center' });
-            
-            // Value
-            doc.setTextColor(26, 82, 118);
-            doc.setFontSize(10);
-            doc.setFont('helvetica', 'bold');
-            doc.text(coord.value, x + coordWidth/2, y + 13, { align: 'center' });
-        });
-        
-        // ========== FOOTER ==========
-        const footerY = pageHeight - 22;
-        
-        // Línea superior del footer
-        doc.setDrawColor(200, 200, 200);
-        doc.setLineWidth(0.3);
-        doc.line(margin, footerY, pageWidth - margin, footerY);
-        
-        // Fecha de generación
-        doc.setTextColor(102, 102, 102);
-        doc.setFontSize(7);
-        doc.setFont('helvetica', 'normal');
-        const fecha = new Date().toLocaleString('es-BO');
-        doc.text(`Generado: ${fecha}`, margin, footerY + 6);
-        doc.text('Sistema: Geoportal Cámaras Pluviales v1.0', margin, footerY + 11);
-        
-        // QR Placeholder
-        doc.setFillColor(51, 51, 51);
-        doc.roundedRect(pageWidth/2 - 8, footerY + 2, 16, 16, 1.5, 1.5, 'F');
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(5);
-        doc.text('QR', pageWidth/2, footerY + 11, { align: 'center' });
-        
-        // Autores
-        doc.setTextColor(102, 102, 102);
-        doc.setFontSize(7);
-        doc.text('Elaborado por:', pageWidth - margin, footerY + 4, { align: 'right' });
-        doc.text('Geogr. John Leonardo Cabrera E.', pageWidth - margin, footerY + 9, { align: 'right' });
-        doc.text('Geogr. Luis Freddy Quenta A.', pageWidth - margin, footerY + 14, { align: 'right' });
-        
-        // ========== MARCA DE AGUA ==========
-        doc.setTextColor(0, 0, 0);
-        doc.setGState(new doc.GState({ opacity: 0.03 }));
-        doc.setFontSize(50);
-        doc.setFont('helvetica', 'bold');
-        doc.text('GAMO', pageWidth/2, pageHeight/2, { align: 'center', angle: 45 });
-        
-        // Restaurar opacidad
-        doc.setGState(new doc.GState({ opacity: 1 }));
-        
-        // Guardar PDF
-        doc.save(`Ficha_Tecnica_${data.cod_cam}.pdf`);
-        
-        console.log('PDF generado exitosamente');
-        
-    } catch (error) {
-        console.error('Error al generar PDF:', error);
-        alert('Error al generar el PDF. Por favor intente nuevamente.');
-    } finally {
-        // Remover indicador de carga
-        const loading = document.getElementById('pdfLoading');
-        if (loading) {
-            loading.remove();
-        }
-    }
-}
+        const doc = new jsPDF('p', 'mm', 'letter');
+        const W = doc.internal.pageSize.getWidth();
+        const H = doc.internal.pageSize.getHeight();
+        const m = 15;
+        const ancho = W - 2 * m;
+        const def = FICHAS[reg.capa];
+        const p = reg.props;
+        const barra = [19, 40, 59];
+        const acento = [29, 90, 133];
+        const color = hexToRgb(colorFicha(reg));
+        const titulo = pdfTexto(tituloFicha(reg));
+        let pagina = 1;
 
-// Función auxiliar para convertir hex a RGB
-function hexToRgb(hex) {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16)
-    } : { r: 23, g: 162, b: 184 };
+        const cabecera = () => {
+            doc.setFillColor(...barra);
+            doc.rect(0, 0, W, 30, 'F');
+            doc.setFillColor(...color);
+            doc.rect(0, 0, 3, 30, 'F');
+            doc.setTextColor(201, 214, 226);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8.5);
+            doc.text(pdfTexto(`FICHA TÉCNICA · ${def.tipo.toUpperCase()}`), m, 10);
+            doc.setTextColor(255, 255, 255);
+            doc.setFont('courier', 'bold');
+            doc.setFontSize(17);
+            doc.text(titulo, m, 19);
+            const sub = def.subtitulo ? def.subtitulo(p) : null;
+            if (sub) {
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(9);
+                doc.setTextColor(201, 214, 226);
+                doc.text(pdfTexto(sub), m, 25.5);
+            }
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8.5);
+            doc.setTextColor(201, 214, 226);
+            doc.text('Sistema de drenaje mixto', W - m, 10, { align: 'right' });
+            doc.text('Casco Viejo de Oruro', W - m, 15, { align: 'right' });
+            if (p.nivel_certeza) doc.text(pdfTexto(`Certeza: ${etiqueta(p.nivel_certeza)}`), W - m, 25.5, { align: 'right' });
+        };
+
+        const pie = () => {
+            doc.setDrawColor(221, 227, 233);
+            doc.setLineWidth(0.3);
+            doc.line(m, H - 16, W - m, H - 16);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(7.5);
+            doc.setTextColor(122, 136, 151);
+            doc.text(pdfTexto(`Generado el ${new Date().toLocaleString('es-BO')} · Fuente: relevamiento de campo (julio de 2025), base PostGIS depurada`), m, H - 11);
+            doc.text('Geogr. John Leonardo Cabrera Espíndola · Geogr. Luis Freddy Quenta Alegría', m, H - 7);
+            doc.text(`Página ${pagina}`, W - m, H - 7, { align: 'right' });
+        };
+
+        cabecera();
+        let y = 38;
+
+        // Fotografía y mapa de ubicación
+        const centro = centroDe(reg);
+        const foto = def.foto ? def.foto(p) : null;
+        const altoImg = 58;
+        const anchoImg = (ancho - 6) / 2;
+        const [fotoB64, mapaB64] = await Promise.all([
+            foto ? cargarImagenBase64(foto) : Promise.resolve(null),
+            generarMapaEstatico(centro.lat, centro.lng, reg.capa === 'canales' ? 16 : 18, 480, 340)
+        ]);
+
+        const recuadro = (x, etiquetaR, imagen, formato, vacio) => {
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(...acento);
+            doc.text(etiquetaR, x, y);
+            doc.setDrawColor(221, 227, 233);
+            doc.setFillColor(243, 245, 247);
+            doc.rect(x, y + 2, anchoImg, altoImg, 'FD');
+            if (imagen) {
+                try {
+                    // Ajuste sin deformar la imagen, centrada en el recuadro
+                    const { width: pw, height: ph } = doc.getImageProperties(imagen);
+                    const escala = Math.min((anchoImg - 1) / pw, (altoImg - 1) / ph);
+                    const w = pw * escala, h = ph * escala;
+                    doc.addImage(imagen, formato, x + (anchoImg - w) / 2, y + 2 + (altoImg - h) / 2, w, h, undefined, 'FAST');
+                    return;
+                } catch (e) { /* se muestra el texto alternativo */ }
+            }
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(122, 136, 151);
+            doc.text(vacio, x + anchoImg / 2, y + 2 + altoImg / 2, { align: 'center' });
+        };
+        recuadro(m, 'FOTOGRAFÍA DE CAMPO', fotoB64, 'JPEG', foto ? 'Fotografía no disponible' : 'Sin fotografía registrada');
+        recuadro(m + anchoImg + 6, 'UBICACIÓN', mapaB64, 'PNG', 'Mapa no disponible');
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(122, 136, 151);
+        const [ex, ny] = aUTM(centro.lat, centro.lng);
+        doc.text(pdfTexto(`UTM 19S: E ${Math.round(ex)} · N ${Math.round(ny)} · Lat/Lon: ${centro.lat.toFixed(6)}, ${centro.lng.toFixed(6)}`), m + anchoImg + 6, y + altoImg + 6);
+        doc.text('Mapa base: © OpenStreetMap', m, y + altoImg + 6);
+        y += altoImg + 13;
+
+        // Atributos en dos columnas: cada sección es un bloque con su título
+        const secciones = seccionesFicha(reg);
+        (def.texto || []).filter(([c]) => p[c]).forEach(([c, t]) => secciones.push({ titulo: t, filas: [{ etiqueta: '', texto: p[c] }] }));
+        if (def.nota) secciones.push({ titulo: 'Nota', filas: [{ etiqueta: '', texto: def.nota }] });
+
+        const sep = 8;
+        const anchoCol = (ancho - sep) / 2;
+        const anchoEtiqueta = 36;
+        const limite = H - 22;
+        const TITULO = 7.5, PIE_SECCION = 3.5;
+        doc.setFontSize(8.5);
+        secciones.forEach(s => {
+            s.filas.forEach(f => {
+                const anchoValor = (f.etiqueta ? anchoCol - anchoEtiqueta : anchoCol) - (f.color ? 4 : 0) - 1;
+                doc.setFont('helvetica', 'normal');
+                f.lineasEtiqueta = f.etiqueta ? doc.splitTextToSize(pdfTexto(f.etiqueta), anchoEtiqueta - 2) : [];
+                doc.setFont(f.mono ? 'courier' : 'helvetica', 'normal');
+                f.lineas = doc.splitTextToSize(pdfTexto(f.texto), anchoValor);
+                f.alto = Math.max(5.2, Math.max(f.lineas.length, f.lineasEtiqueta.length) * 3.6 + 1.8);
+            });
+            s.alto = TITULO + s.filas.reduce((t, f) => t + f.alto, 0) + PIE_SECCION;
+        });
+
+        const dibujarSeccion = (s, x, yIni) => {
+            let yy = yIni;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(...acento);
+            doc.text(pdfTexto(s.titulo.toUpperCase()), x, yy);
+            doc.setDrawColor(...acento);
+            doc.setLineWidth(0.4);
+            doc.line(x, yy + 1.5, x + anchoCol, yy + 1.5);
+            yy += TITULO;
+            for (const f of s.filas) {
+                const xValor = f.etiqueta ? x + anchoEtiqueta : x;
+                doc.setFontSize(8.5);
+                if (f.etiqueta) {
+                    doc.setFont('helvetica', 'normal');
+                    doc.setTextColor(122, 136, 151);
+                    doc.text(f.lineasEtiqueta, x, yy);
+                }
+                if (f.color) {
+                    doc.setFillColor(...hexToRgb(f.color));
+                    doc.rect(xValor, yy - 2.2, 2.4, 2.4, 'F');
+                }
+                doc.setFont(f.mono ? 'courier' : 'helvetica', 'normal');
+                doc.setTextColor(22, 34, 46);
+                doc.text(f.lineas, xValor + (f.color ? 4 : 0), yy);
+                doc.setDrawColor(235, 239, 243);
+                doc.setLineWidth(0.2);
+                doc.line(x, yy + f.alto - 3.4, x + anchoCol, yy + f.alto - 3.4);
+                yy += f.alto;
+            }
+            return yy + PIE_SECCION;
+        };
+
+        // Reparto equilibrado si todo cabe en la primera página
+        const total = secciones.reduce((t, s) => t + s.alto, 0);
+        let corte = 0, mejor = Infinity, acumulado = 0;
+        secciones.forEach((s, i) => {
+            acumulado += s.alto;
+            const mayor = Math.max(acumulado, total - acumulado);
+            if (mayor < mejor) { mejor = mayor; corte = i + 1; }
+        });
+        if (y + mejor <= limite) {
+            let yl = y, yr = y;
+            secciones.forEach((s, i) => {
+                if (i < corte) yl = dibujarSeccion(s, m, yl);
+                else yr = dibujarSeccion(s, m + anchoCol + sep, yr);
+            });
+        } else {
+            // Flujo por columnas y páginas
+            let col = 0;
+            const yTope = () => (pagina === 1 ? y : 38);
+            let yc = y;
+            for (const s of secciones) {
+                if (yc + s.alto > limite) {
+                    if (col === 0) {
+                        col = 1;
+                        yc = yTope();
+                    } else {
+                        pie();
+                        doc.addPage();
+                        pagina++;
+                        cabecera();
+                        col = 0;
+                        yc = 38;
+                    }
+                }
+                yc = dibujarSeccion(s, m + col * (anchoCol + sep), yc);
+            }
+        }
+        pie();
+        const nombre = String(p.codigo || p.nombre || 'elemento').replace(/[^A-Za-z0-9_+-]/g, '_');
+        doc.save(`Ficha_tecnica_${nombre}.pdf`);
+    } catch (error) {
+        console.error(error);
+        aviso('No se pudo generar el PDF. Intente nuevamente.', 'error');
+    } finally {
+        carga.remove();
+    }
 }

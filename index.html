@@ -2,256 +2,145 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Geoportal - Cámaras Pluviales</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Geoportal del drenaje mixto · Casco Viejo de Oruro</title>
+    <meta name="description" content="Consulta geoespacial del sistema de drenaje mixto del Casco Viejo de Oruro: cámaras de inspección, sumideros, tuberías y canales relevados en julio de 2025.">
+    <meta name="theme-color" content="#13283b">
+    <meta property="og:title" content="Geoportal del drenaje mixto · Casco Viejo de Oruro">
+    <meta property="og:description" content="Cámaras, sumideros, tuberías y canales del Casco Viejo de Oruro, con su estado, condición y nivel de certeza.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2313283b'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%23ffffff' stroke-width='2'/%3E%3Cpath d='M10 13h12M10 16h12M10 19h12' stroke='%23ffffff' stroke-width='1.6'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div id="map"></div>
-    
-    <!-- Botón flotante para abrir panel de control -->
-    <button class="panel-toggle-btn visible" id="panelToggleBtn" onclick="togglePanel('controlPanel')" aria-label="Abrir panel de control">
-        ⚙️
-    </button>
-    
-    <!-- Panel de control -->
-    <div class="control-panel hidden" id="controlPanel">
-        <button class="panel-close" onclick="togglePanel('controlPanel')" aria-label="Cerrar panel">
-            ✕
+    <a class="saltar" href="#panel">Saltar al panel de consulta</a>
+
+    <header class="barra">
+        <button class="barra__menu" id="btnPanel" type="button" aria-controls="panel" aria-expanded="true" aria-label="Mostrar u ocultar el panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
         </button>
-        <h3>
-            <span>🗺️</span>
-            <span>Geoportal Cámaras</span>
-        </h3>
-        
-        <p style="font-size:13px;color:#555;margin:8px 0;">📦 Datos cargados desde GeoPackage local (<code>datos.geojson</code>): cámaras, sumideros y tuberías.</p>
+        <div class="barra__titulo">
+            <h1>Sistema de drenaje mixto del Casco Viejo de Oruro</h1>
+            <p>Geoportal de consulta · Relevamiento de campo, julio de 2025</p>
+        </div>
+        <div class="barra__estado" id="estadoDatos" role="status">
+            <span class="punto" aria-hidden="true"></span>
+            <span class="texto">Cargando datos</span>
+        </div>
+    </header>
 
-        <button class="btn-primary" onclick="cargarCapa()">
-            <span>🔍</span>
-            <span>Cargar Capa</span>
-        </button>
-        
-        <button class="btn-secondary" onclick="limpiarCapa()" style="display: none;" id="btnLimpiar">
-            🗑️ Limpiar Capa
-        </button>
-        
-        <!-- Botón de ubicación -->
-        <button class="btn-location" onclick="obtenerUbicacion()" id="btnUbicacion">
-            📍 Mi Ubicación
-        </button>
-        
-        <div id="status"></div>
-        
-        <!-- Panel de información de ubicación -->
-        <div class="location-info" id="locationInfo" style="display: none;">
-            <strong>📍 Tu ubicación:</strong><br>
-            <span id="coordenadas">-</span>
-        </div>
-        
-        <div class="info-panel" id="infoPanel" style="display: none;">
-            <strong>Puntos cargados:</strong> <span id="totalPuntos">0</span><br>
-            <strong>Última actualización:</strong> <span id="ultimaActualizacion">-</span>
-        </div>
-    </div>
+    <main class="app">
+        <aside class="panel" id="panel" aria-label="Panel de consulta">
+            <nav class="pestanas" role="tablist" aria-label="Secciones del panel">
+                <button role="tab" type="button" id="t-capas" aria-controls="p-capas" aria-selected="true" data-tab="capas">Capas</button>
+                <button role="tab" type="button" id="t-buscar" aria-controls="p-buscar" aria-selected="false" data-tab="buscar">Buscar</button>
+                <button role="tab" type="button" id="t-resumen" aria-controls="p-resumen" aria-selected="false" data-tab="resumen">Resumen</button>
+                <button role="tab" type="button" id="t-rutas" aria-controls="p-rutas" aria-selected="false" data-tab="rutas">Rutas</button>
+                <button role="tab" type="button" id="t-acerca" aria-controls="p-acerca" aria-selected="false" data-tab="acerca">Acerca</button>
+            </nav>
 
-    <!-- Botón flotante para abrir panel de rutas -->
-    <button class="route-toggle-btn visible" id="routeToggleBtn" onclick="togglePanel('routePanel')" aria-label="Abrir panel de rutas">
-        🗺️
-    </button>
+            <section class="seccion" id="p-capas" role="tabpanel" aria-labelledby="t-capas">
+                <div id="listaCapas">
+                    <div class="esqueleto"></div><div class="esqueleto"></div><div class="esqueleto corto"></div>
+                    <div class="esqueleto"></div><div class="esqueleto"></div>
+                </div>
+                <div class="grupo">
+                    <h2 class="grupo__titulo">Mapa base</h2>
+                    <div class="mapas-base" id="mapasBase" role="radiogroup" aria-label="Mapa base"></div>
+                </div>
+            </section>
 
-    <!-- Panel de rutas -->
-    <div class="route-panel hidden" id="routePanel">
-        <button class="panel-close" onclick="togglePanel('routePanel')" aria-label="Cerrar panel de rutas">
-            ✕
-        </button>
-        <h3>
-            <span>🚗</span>
-            <span>Calcular Ruta</span>
-        </h3>
+            <section class="seccion" id="p-buscar" role="tabpanel" aria-labelledby="t-buscar" hidden>
+                <label class="etiqueta" for="buscador">Código del elemento o nombre del canal</label>
+                <input class="campo" type="search" id="buscador" autocomplete="off" spellcheck="false"
+                       placeholder="PCCA001, PCCB050SM02, CNZC 0+285…">
+                <p class="ayuda">Cámaras (PCC…), sumideros (…SM…), tuberías (…T1), progresivas de canal (CNZC 0+285) o canales por nombre.</p>
+                <ul class="resultados" id="resultados" role="listbox" aria-label="Resultados de la búsqueda"></ul>
+            </section>
 
-        <div class="route-mode-selector">
-            <label>Modo de transporte:</label>
-            <select id="routeProfile" class="route-select">
-                <option value="driving-car">🚗 Auto</option>
-                <option value="cycling-regular">🚴 Bicicleta</option>
-                <option value="foot-walking">🚶 A pie</option>
-            </select>
-        </div>
+            <section class="seccion" id="p-resumen" role="tabpanel" aria-labelledby="t-resumen" hidden>
+                <div id="resumen"></div>
+            </section>
 
-        <div class="input-group">
-            <label>📍 Desde (Origen)</label>
-            <div class="coordinate-input-group">
-                <input type="text" id="origenLat" placeholder="Latitud" class="coord-input">
-                <input type="text" id="origenLon" placeholder="Longitud" class="coord-input">
-            </div>
-            <button class="btn-small" onclick="usarUbicacionActual('origen')">
-                📍 Usar mi ubicación
-            </button>
-            <button class="btn-small" onclick="seleccionarEnMapa('origen')">
-                🎯 Seleccionar en mapa
-            </button>
-        </div>
+            <section class="seccion" id="p-rutas" role="tabpanel" aria-labelledby="t-rutas" hidden>
+                <p class="ayuda">Calcula el recorrido hasta un elemento. Use «Cómo llegar» en la ficha de un elemento o seleccione los puntos en el mapa.</p>
+                <label class="etiqueta" for="routeProfile">Modo de desplazamiento</label>
+                <select id="routeProfile" class="campo">
+                    <option value="driving-car">Vehículo</option>
+                    <option value="foot-walking">A pie</option>
+                    <option value="cycling-regular">Bicicleta</option>
+                </select>
 
-        <div class="input-group">
-            <label>🏁 Hacia (Destino)</label>
-            <div class="coordinate-input-group">
-                <input type="text" id="destinoLat" placeholder="Latitud" class="coord-input">
-                <input type="text" id="destinoLon" placeholder="Longitud" class="coord-input">
-            </div>
-            <button class="btn-small" onclick="seleccionarEnMapa('destino')">
-                🎯 Seleccionar en mapa
-            </button>
-        </div>
+                <fieldset class="punto-ruta">
+                    <legend>Origen</legend>
+                    <div class="coordenadas">
+                        <input type="text" id="origenLat" class="campo" placeholder="Latitud" inputmode="decimal" aria-label="Latitud de origen">
+                        <input type="text" id="origenLon" class="campo" placeholder="Longitud" inputmode="decimal" aria-label="Longitud de origen">
+                    </div>
+                    <div class="acciones">
+                        <button type="button" class="boton boton--texto" onclick="usarUbicacionActual('origen')">Mi ubicación</button>
+                        <button type="button" class="boton boton--texto" onclick="seleccionarEnMapa('origen')">Elegir en el mapa</button>
+                    </div>
+                </fieldset>
 
-        <button class="btn-primary" onclick="calcularRuta()">
-            <span>🗺️</span>
-            <span>Calcular Ruta</span>
-        </button>
+                <fieldset class="punto-ruta">
+                    <legend>Destino</legend>
+                    <div class="coordenadas">
+                        <input type="text" id="destinoLat" class="campo" placeholder="Latitud" inputmode="decimal" aria-label="Latitud de destino">
+                        <input type="text" id="destinoLon" class="campo" placeholder="Longitud" inputmode="decimal" aria-label="Longitud de destino">
+                    </div>
+                    <div class="acciones">
+                        <button type="button" class="boton boton--texto" onclick="seleccionarEnMapa('destino')">Elegir en el mapa</button>
+                    </div>
+                </fieldset>
 
-        <button class="btn-secondary" onclick="limpiarRuta()" style="display: none;" id="btnLimpiarRuta">
-            🗑️ Limpiar Ruta
-        </button>
+                <div class="acciones acciones--bloque">
+                    <button type="button" class="boton boton--primario" onclick="calcularRuta()">Calcular ruta</button>
+                    <button type="button" class="boton" onclick="limpiarRuta()" id="btnLimpiarRuta" hidden>Limpiar</button>
+                </div>
+                <p class="mensaje" id="routeStatus" role="status" aria-live="polite"></p>
+                <div class="rutas-info" id="routeInfo" hidden></div>
+            </section>
 
-        <div id="routeStatus"></div>
+            <section class="seccion acerca" id="p-acerca" role="tabpanel" aria-labelledby="t-acerca" hidden>
+                <h2>Sobre este geoportal</h2>
+                <p>Consulta de la base geoespacial del sistema de drenaje mixto del Casco Viejo de Oruro (364,9 ha), elaborada en el proyecto de grado <em>Diagnóstico geoespacial del sistema de drenaje mixto urbano del Casco Viejo de Oruro mediante SIG para la gestión territorial del riesgo de inundaciones</em> (Carrera de Ingeniería Geográfica, UMSA).</p>
 
-        <!-- Panel de información de rutas múltiples -->
-        <div class="route-info" id="routeInfo" style="display: none;">
-            <!-- Se llenará dinámicamente con la información de las rutas -->
-        </div>
-    </div>
+                <h3>Datos</h3>
+                <dl class="datos-fuente" id="metadatos">
+                    <dt>Relevamiento de campo</dt><dd>05/07/2025 – 23/07/2025, con QField y formularios digitales</dd>
+                    <dt>Elevaciones</dt><dd>Modelo Digital de Superficie fotogramétrico (10 cm/píxel); alturas elipsoidales</dd>
+                    <dt>Base de datos</dt><dd>PostgreSQL/PostGIS, depurada y validada mediante un proceso reproducible</dd>
+                    <dt>Sistema de referencia</dt><dd>WGS 84 / UTM zona 19S (EPSG:32719)</dd>
+                </dl>
 
-    <!-- Botón flotante para abrir créditos -->
-    <button class="credits-toggle-btn visible" id="creditsToggleBtn" onclick="togglePanel('creditsPanel')" aria-label="Abrir créditos">
-        👥
-    </button>
+                <h3>Nivel de certeza</h3>
+                <dl class="datos-fuente">
+                    <dt>Confirmado</dt><dd>Observado o medido directamente.</dd>
+                    <dt>Probable</dt><dd>Localizado, con atributos observados desde la superficie.</dd>
+                    <dt>Inferido</dt><dd>Estimado a partir de evidencia indirecta (por ejemplo, el trazado enterrado de una tubería).</dd>
+                    <dt>No determinado</dt><dd>Información insuficiente.</dd>
+                </dl>
 
-    <!-- Panel de créditos -->
-    <div class="credits hidden" id="creditsPanel">
-        <button class="panel-close" onclick="togglePanel('creditsPanel')" aria-label="Cerrar créditos">
-            ✕
-        </button>
-        <div class="credits-title">👨‍💻 Desarrollado por:</div>
-        <div class="credits-names">
-            <div>Geogr. John Leonardo Cabrera Espíndola</div>
-            <div>Geogr. Luis Freddy Quenta Alegría</div>
-        </div>
-        <div class="credits-location">
-            📍 La Paz, Bolivia
-        </div>
-    </div>
+                <h3>Notas de interpretación</h3>
+                <ul class="notas">
+                    <li>Las tuberías inferidas o no determinadas se dibujan con línea discontinua.</li>
+                    <li>Las pendientes son de la superficie según el MDS; no equivalen a pendientes hidráulicas.</li>
+                    <li>Las secciones de canal estimadas no fueron medidas directamente.</li>
+                </ul>
 
-    <!-- Botón flotante para abrir leyenda -->
-    <button class="legend-toggle-btn visible" id="legendToggleBtn" onclick="togglePanel('legendPanel')" aria-label="Abrir leyenda">
-        📋
-    </button>
+                <h3>Autoría</h3>
+                <p>Geogr. John Leonardo Cabrera Espíndola<br>Geogr. Luis Freddy Quenta Alegría</p>
+            </section>
+        </aside>
 
-    <!-- Panel de leyenda -->
-    <div class="legend hidden" id="legendPanel">
-        <button class="panel-close" onclick="togglePanel('legendPanel')" aria-label="Cerrar leyenda">
-            ✕
-        </button>
-        <h4>📋 Accesibilidad</h4>
-        <div class="legend-item">
-            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#28a745" stroke-width="2"/>
-                <g transform="translate(16, 16)">
-                    <rect x="-6" y="-3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
-                    <rect x="1.5" y="-3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
-                    <rect x="-6" y="0" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
-                    <rect x="1.5" y="0" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
-                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
-                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#28a745" rx="0.5"/>
-                </g>
-            </svg>
-            <span>Accesible Operativo</span>
-        </div>
-        <div class="legend-item">
-            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#ffc107" stroke-width="2"/>
-                <g transform="translate(16, 16)">
-                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
-                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
-                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
-                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
-                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
-                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#ffc107" rx="0.5"/>
-                </g>
-            </svg>
-            <span>Accesible con Dificultad</span>
-        </div>
-        <div class="legend-item">
-            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#6c757d" stroke-width="2"/>
-                <g transform="translate(16, 16)">
-                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
-                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
-                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
-                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
-                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
-                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#6c757d" rx="0.5"/>
-                </g>
-            </svg>
-            <span>Inferido</span>
-        </div>
-        <div class="legend-item">
-            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#dc3545" stroke-width="2"/>
-                <g transform="translate(16, 16)">
-                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
-                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
-                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
-                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
-                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
-                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#dc3545" rx="0.5"/>
-                </g>
-            </svg>
-            <span>No Accesible</span>
-        </div>
-        <div class="legend-item">
-            <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="16" cy="16" r="13" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <circle cx="16" cy="16" r="9.5" fill="none" stroke="#17a2b8" stroke-width="2"/>
-                <g transform="translate(16, 16)">
-                    <rect x="-6" y="-2" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
-                    <rect x="1.5" y="-2" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
-                    <rect x="-6" y="0.5" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
-                    <rect x="1.5" y="0.5" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
-                    <rect x="-6" y="3" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
-                    <rect x="1.5" y="3" width="4.5" height="1.5" fill="#17a2b8" rx="0.5"/>
-                </g>
-            </svg>
-            <span>Otro estado</span>
-        </div>
-        <h4 style="margin-top:12px;">🟦 Otras capas</h4>
-        <div class="legend-item">
-            <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="3" width="22" height="22" rx="3" fill="#fafafa" stroke="#4a4a4a" stroke-width="2"/>
-                <rect x="6" y="6" width="16" height="16" rx="2" fill="none" stroke="#0077b6" stroke-width="2"/>
-                <line x1="10" y1="7" x2="10" y2="21" stroke="#0077b6" stroke-width="1.6"/>
-                <line x1="14" y1="7" x2="14" y2="21" stroke="#0077b6" stroke-width="1.6"/>
-                <line x1="18" y1="7" x2="18" y2="21" stroke="#0077b6" stroke-width="1.6"/>
-            </svg>
-            <span>Sumidero</span>
-        </div>
-        <div class="legend-item">
-            <svg width="32" height="20" viewBox="0 0 32 20" xmlns="http://www.w3.org/2000/svg">
-                <line x1="2" y1="10" x2="30" y2="10" stroke="#1f78b4" stroke-width="3"/>
-            </svg>
-            <span>Tubería cámaras</span>
-        </div>
-        <div class="legend-item">
-            <svg width="32" height="20" viewBox="0 0 32 20" xmlns="http://www.w3.org/2000/svg">
-                <line x1="2" y1="10" x2="30" y2="10" stroke="#7fd4f5" stroke-width="3"/>
-            </svg>
-            <span>Tubería sumideros</span>
-        </div>
-    </div>
+        <div id="map" role="region" aria-label="Mapa del sistema de drenaje"></div>
+    </main>
+
+    <div class="aviso" id="aviso" role="status" aria-live="polite" hidden></div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>

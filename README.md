@@ -1,57 +1,61 @@
-# Geoportal GAMO — Sistema de Drenaje Pluvial (Oruro)
+# Geoportal GAMO — Sistema de drenaje mixto del Casco Viejo de Oruro
 
-Mapa web interactivo del sistema de drenaje pluvial del casco viejo de Oruro:
-cámaras de inspección, sumideros y tuberías. Los datos se leen de la base
-PostGIS del proyecto en Supabase y, si no está configurada o no responde,
-de `datos.geojson`.
+Mapa web de consulta del sistema de drenaje mixto del Casco Viejo de Oruro:
+cámaras de inspección, sumideros, tuberías, canales y sus secciones
+levantadas, con el estado, la condición y el nivel de certeza de cada
+elemento (relevamiento de campo de julio de 2025).
+
+Publicado en https://gleoleder.github.io/GeoportalGamo/
 
 ## Contenido
 
-- `index.html`, `script.js`, `styles.css` — la aplicación web (Leaflet).
+- `index.html`, `styles.css`, `script.js` — la aplicación (Leaflet 1.9 y jsPDF).
 - `config.js` — URL y clave anon de Supabase (vacías = usar `datos.geojson`).
-- `datos.geojson` — datos de las 4 capas reproyectados a WGS84 (lat/lon).
-- `geopacage/` — GeoPackage originales (EPSG:32719, UTM 19S).
-- `convertir_gpkg.py` — regenera `datos.geojson` desde los `.gpkg`.
+- `datos.geojson` — copia local de las capas, usada si Supabase no responde.
 - `ABRIR_GEOPORTAL.bat` — abre el geoportal con un servidor local.
 
-## Cómo usar
+## Datos
+
+Las capas provienen de la base PostGIS depurada del proyecto
+`DRENAJE_ORURO_POSTGIS`. El geoportal llama a la función de solo lectura
+`geoportal_datos` (`POST /rest/v1/rpc/geoportal_datos`), que devuelve en
+GeoJSON (EPSG:4326) las capas `camaras`, `sumideros`, `tuberias_camaras`,
+`tuberias_sumideros`, `canales`, `progresivas` y `area`, más un resumen del
+proceso.
+
+Para actualizar la copia local después de reprocesar la base:
+
+```
+copy ..\DRENAJE_ORURO_POSTGIS\resultados\geoportal.geojson datos.geojson
+```
+
+`convertir_gpkg.py` y la carpeta `geopacage/` corresponden a la versión
+anterior (lectura directa de GeoPackage) y ya no generan el formato que usa
+la aplicación.
+
+La clave anon de `config.js` es pública por diseño: solo permite ejecutar la
+función de lectura. Nunca poner aquí la contraseña de la base ni la clave
+service_role.
+
+## Cómo usar en local
 
 Abrir **`ABRIR_GEOPORTAL.bat`** (levanta un servidor local y abre el navegador).
 No abrir `index.html` con doble clic: `fetch()` no funciona sobre `file://`.
 
-## Conectar con Supabase
-
-La base depurada se construye con el proyecto `DRENAJE_ORURO_POSTGIS`, que
-publica la función `geoportal_capas()`. Para leerla, completar `config.js`:
-
-```js
-window.GEOPORTAL_CONFIG = {
-    supabaseUrl: 'https://TU_PROYECTO.supabase.co',
-    supabaseAnonKey: 'clave anon o publishable'
-};
-```
-
-La clave anon es pública por diseño: solo permite ejecutar esa función de
-lectura. Nunca poner aquí la contraseña de la base ni la clave service_role.
-
-## Actualizar los datos sin Supabase
-
-Si cambian los GeoPackage en `geopacage/`, regenerar el GeoJSON:
-
-```
-python convertir_gpkg.py
-```
-
-Requiere `pyproj` (`pip install pyproj`).
-
 ## Funciones
 
-- 4 capas que se prenden/apagan: cámaras, sumideros, tuberías de cámaras y de sumideros.
-- Simbología por accesibilidad (cámaras) y símbolo propio para sumideros.
-- Grosor de tubería proporcional al diámetro.
-- Animación del flujo de agua en el sentido ORIGEN → DESTINO.
-- Popups con foto (Google Drive), datos técnicos y ficha técnica en PDF.
-- Cálculo de rutas y geolocalización.
+- Panel con pestañas: capas, búsqueda, resumen, rutas y notas metodológicas.
+- Simbolización seleccionable: cámaras por accesibilidad, estado físico,
+  funcionamiento, condición interior o certeza; sumideros por condición,
+  estado o certeza; secciones de canal por estado estructural o certeza.
+- Leyendas con el número de elementos por categoría.
+- Tuberías con grosor según el diámetro y línea discontinua cuando el trazado
+  es inferido; animación opcional del sentido del flujo.
+- Fichas emergentes con todos los atributos depurados, la fotografía de campo
+  y las conexiones de cada elemento.
+- Ficha técnica en PDF (fotografía, mapa de ubicación y atributos).
+- Búsqueda por código o nombre de canal, rutas (OSRM), geolocalización,
+  coordenadas UTM 19S del cursor, escala y norte.
 
 ## Créditos
 
