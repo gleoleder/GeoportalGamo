@@ -437,25 +437,25 @@ const MAPAS_BASE = {
     gris: {
         nombre: 'Calles (gris)',
         capa: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap', maxZoom: 22, maxNativeZoom: 19, className: 'base-gris'
+            attribution: '© OpenStreetMap', maxZoom: 24, maxNativeZoom: 19, className: 'base-gris'
         })
     },
     calles: {
         nombre: 'Calles',
         capa: () => L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap', maxZoom: 22, maxNativeZoom: 19
+            attribution: '© OpenStreetMap', maxZoom: 24, maxNativeZoom: 19
         })
     },
     satelite: {
         nombre: 'Satélite',
         capa: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            attribution: '© Esri, Maxar', maxZoom: 22, maxNativeZoom: 19
+            attribution: '© Esri, Maxar', maxZoom: 24, maxNativeZoom: 19
         })
     },
     topo: {
         nombre: 'Topográfico',
         capa: () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
-            attribution: '© Esri', maxZoom: 22, maxNativeZoom: 19
+            attribution: '© Esri', maxZoom: 24, maxNativeZoom: 19
         })
     }
 };
@@ -463,7 +463,7 @@ let baseActual = null;
 let claveBase = 'gris';
 
 function initMap() {
-    map = L.map('map', { maxZoom: 22, zoomSnap: 0.25, zoomControl: false }).setView([-17.9647, -67.1064], 15);
+    map = L.map('map', { maxZoom: 24, zoomSnap: 0.25, zoomControl: false }).setView([-17.9647, -67.1064], 15);
 
     // Capas: área, elementos de la red (un solo lienzo), flujo animado y etiquetas
     [['pArea', 380], ['pVector', 410], ['pFlujo', 415], ['pEtiquetas', 612]].forEach(([n, z]) => {
@@ -946,8 +946,10 @@ function crearEtiquetaPendiente(reg) {
     const invertida = angulo > 90 || angulo < -90;
     if (invertida) angulo += 180;
     const texto = `${numero(v, 1)} %`;
+    const menor = reg.capa === 'tuberias_sumideros';  // tramos cortos: letra más chica
+    reg.etiquetaDatos = { medio, rad: angulo * Math.PI / 180, texto: invertida ? `← ${texto}` : `${texto} →`, menor };
     // Rojo: contrapendiente; borde punteado: valor a revisar
-    const clases = [v < 0 ? 'contra' : '', reg.props.pendiente_revisar ? 'revisar' : ''].join(' ').trim();
+    const clases = [v < 0 ? 'contra' : '', reg.props.pendiente_revisar ? 'revisar' : '', menor ? 'menor' : ''].join(' ').trim();
     return L.marker(medio, {
         pane: 'pEtiquetas',
         interactive: false,
@@ -960,28 +962,80 @@ function crearEtiquetaPendiente(reg) {
     });
 }
 
-// Solo hay etiquetas de los tramos que se ven: se crean la primera vez que
-// entran en la vista y se quitan al salir (se revisa al terminar de mover).
+// Ancho en píxeles del texto de una etiqueta (igual tipografía que styles.css)
+const anchoTexto = (() => {
+    const ctx = document.createElement('canvas').getContext('2d');
+    const cache = {};
+    return (texto, menor) => {
+        const clave = `${menor ? 'm' : 'n'}${texto}`;
+        if (cache[clave] === undefined) {
+            ctx.font = `600 ${menor ? 9.5 : 10.5}px "IBM Plex Sans", sans-serif`;
+            cache[clave] = ctx.measureText(texto).width;
+        }
+        return cache[clave];
+    };
+})();
+
+// ¿Se superponen dos rectángulos girados? (teorema del eje separador)
+function rectangulosChocan(a, b) {
+    const radio = (c, ax, ay) => Math.abs(c.hw * (c.ux * ax + c.uy * ay)) + Math.abs(c.hh * (c.ux * ay - c.uy * ax));
+    const dx = b.cx - a.cx, dy = b.cy - a.cy;
+    for (const [ax, ay] of [[a.ux, a.uy], [-a.uy, a.ux], [b.ux, b.uy], [-b.uy, b.ux]]) {
+        if (Math.abs(dx * ax + dy * ay) > radio(a, ax, ay) + radio(b, ax, ay)) return false;
+    }
+    return true;
+}
+
+// Etiquetas de pendiente legibles: solo de los tramos que se ven y sin
+// superponerse. Se ubican primero las tuberías de cámaras y los tramos más
+// largos; se omite la que choca con otra, tapa una cámara o un sumidero, o no
+// cabe en su tramo (aparece al acercarse). Se recalcula al terminar de mover.
 function actualizarEtiquetas() {
     if (!map) return;
     const z = map.getZoom();
-    const vista = map.getBounds().pad(0.25);
+    const vista = map.getBounds().pad(0.1);
+    const mPorPx = 40075016.686 * Math.cos(map.getCenter().lat * Math.PI / 180) / (256 * 2 ** z);
+    const ocupado = [];
+    ['camaras', 'sumideros'].forEach(capa => {
+        if (!grupos[capa] || !map.hasLayer(grupos[capa])) return;
+        const r = RADIO_SIMBOLO[capa] * escalaSimbolo(z) + 1;
+        for (const reg of registro[capa]) {
+            if (!vista.contains(reg.latlng)) continue;
+            const p = map.latLngToContainerPoint(reg.latlng);
+            ocupado.push({ cx: p.x, cy: p.y, hw: r, hh: r, ux: 1, uy: 0 });
+        }
+    });
+    const candidatas = [];
+    ['tuberias_camaras', 'tuberias_sumideros'].forEach((capa, prioridad) => {
+        if (!registro[capa] || !etiquetasActivas || !visibles[capa] || z < CAPAS[capa].zoomEtiquetas) return;
+        for (const reg of registro[capa]) {
+            reg.caja ||= reg.layer.getBounds();
+            if (!vista.intersects(reg.caja)) continue;
+            if (reg.etiqueta === undefined) reg.etiqueta = crearEtiquetaPendiente(reg);
+            if (reg.etiqueta) candidatas.push({ reg, prioridad, largo: (Number(reg.props.longitud_m) || 0) / mPorPx });
+        }
+    });
+    candidatas.sort((a, b) => a.prioridad - b.prioridad || b.largo - a.largo);
+    const elegidas = new Set();
+    for (const { reg, largo } of candidatas) {
+        const d = reg.etiquetaDatos;
+        const ancho = anchoTexto(d.texto, d.menor) + (d.menor ? 8 : 10);
+        if (largo < ancho * 0.85) continue;  // la etiqueta no cabe en el tramo
+        const p = map.latLngToContainerPoint(d.medio);
+        const caja = { cx: p.x, cy: p.y, hw: ancho / 2 + 1, hh: (d.menor ? 14 : 16) / 2 + 1, ux: Math.cos(d.rad), uy: Math.sin(d.rad) };
+        if (ocupado.some(o => rectangulosChocan(caja, o))) continue;
+        ocupado.push(caja);
+        elegidas.add(reg);
+    }
     ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
         if (!registro[capa]) return;
-        const mostrar = etiquetasActivas && visibles[capa] && z >= CAPAS[capa].zoomEtiquetas;
         const g = etiquetas[capa] ||= L.layerGroup();
-        if (!mostrar) {
-            if (map.hasLayer(g)) map.removeLayer(g);
-            return;
+        for (const reg of registro[capa]) {
+            if (!reg.etiqueta) continue;
+            const ver = elegidas.has(reg);
+            if (ver && !g.hasLayer(reg.etiqueta)) g.addLayer(reg.etiqueta);
+            if (!ver && g.hasLayer(reg.etiqueta)) g.removeLayer(reg.etiqueta);
         }
-        registro[capa].forEach(reg => {
-            reg.caja ||= reg.layer.getBounds();
-            const dentro = vista.intersects(reg.caja);
-            if (dentro && reg.etiqueta === undefined) reg.etiqueta = crearEtiquetaPendiente(reg);
-            if (!reg.etiqueta) return;
-            if (dentro && !g.hasLayer(reg.etiqueta)) g.addLayer(reg.etiqueta);
-            if (!dentro && g.hasLayer(reg.etiqueta)) g.removeLayer(reg.etiqueta);
-        });
         if (!map.hasLayer(g)) g.addTo(map);
     });
 }
@@ -1107,7 +1161,7 @@ function htmlLeyenda(capa) {
         filas.push(`<li class="nota">${capa === 'tuberias_camaras'
             ? 'Pendiente en el sentido del flujo, con las cotas de fondo (terreno del MDS menos la profundidad medida) o, sin profundidades, con el terreno entre cámaras.'
             : 'Pendiente hidráulica en el sentido del flujo, con las cotas de fondo (terreno del MDS menos la profundidad medida).'}
-            Negativa = contrapendiente (etiqueta roja); borde punteado = valor a revisar. Las etiquetas aparecen desde el zoom ${def.zoomEtiquetas}; la flecha indica el sentido del flujo.</li>`);
+            Negativa = contrapendiente (etiqueta roja); borde punteado = valor a revisar. Las etiquetas aparecen desde el zoom ${def.zoomEtiquetas} donde caben sin taparse; al acercarse se ven más. La flecha indica el sentido del flujo.</li>`);
         return filas.join('');
     }
     if (TEMAS[capa]) {
@@ -1930,7 +1984,8 @@ function irA(reg) {
         map.setView(reg.latlng, Math.max(map.getZoom(), 19));
     } else {
         alTerminarMovimiento(() => reg.layer.openPopup(reg.layer.getBounds().getCenter()));
-        map.fitBounds(reg.layer.getBounds(), { padding: [60, 60], maxZoom: 19 });
+        // Las tuberías de sumideros son cortas: se acerca más para que se lean
+        map.fitBounds(reg.layer.getBounds(), { padding: [60, 60], maxZoom: reg.capa === 'tuberias_sumideros' ? 21 : 19 });
     }
 }
 

@@ -94,7 +94,9 @@ No abrir `index.html` con doble clic: `fetch()` no funciona sobre `file://`.
 - Todo se dibuja en canvas (puntos, líneas y la animación del flujo), sin un
   elemento de la página por punto: el mapa se mueve unas tres veces más rápido
   que con marcadores y la animación casi no consume recursos. Las etiquetas de
-  pendiente se crean solo para los tramos visibles.
+  pendiente se muestran solo para los tramos visibles y sin superponerse:
+  primero las de tuberías de cámaras y los tramos largos; las demás aparecen
+  al acercarse (zoom hasta 24).
 - Fichas emergentes con todos los atributos depurados, la fotografía de campo
   y las conexiones de cada elemento; las tuberías incluyen un perfil
   longitudinal (terreno, cámaras y fondo de la tubería) y sus cotas.
