@@ -3133,7 +3133,7 @@ function hexToRgb(hex) {
 
 // Texto apto para las fuentes estándar del PDF (sin caracteres fuera de Latin-1)
 function pdfTexto(t) {
-    return String(t ?? '').replace(/→/g, '->').replace(/[−–]/g, '-').replace(/[^\x00-\xFF]/g, '');
+    return String(t ?? '').replace(/→/g, '->').replace(/[−–—]/g, '-').replace(/[^\x00-\xFF]/g, '');
 }
 
 // Bibliotecas que se descargan solo cuando se necesitan (jsPDF, supabase-js)
@@ -3154,7 +3154,442 @@ function cargarJsPDF() {
     return window.jspdf ? Promise.resolve() : cargarScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
 }
 
+// =====================================================================
+// Ficha técnica con el formato oficial del catastro
+// =====================================================================
+// Cámaras, sumideros y secciones de canal se imprimen con el diseño de las
+// fichas entregadas (2_FICHAS_TECNICAS): hoja carta, cabecera con el escudo
+// y el logo de la consultora, campos en píldoras, esquema con medidas y
+// código QR de la fotografía. Las coordenadas están en puntos (612 × 792) y
+// se tomaron de esos PDF; el croquis es el mapa de ubicación del geoportal.
+const VERDE_FICHA = [226, 249, 221];
+const IMAGENES_FICHA = {
+    escudo: 'img/fichas/escudo_oruro.jpg',
+    logo: 'img/fichas/logo_chulkuni.jpg',
+    camaras: 'img/fichas/esquema_camara.jpg',
+    sumideros: 'img/fichas/esquema_sumidero.jpg',
+    progresivas: 'img/fichas/esquema_canal.jpg'
+};
+const QR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+const TITULO_CATASTRO = ['CATASTRO DE LA RED DE', 'ACANTARILLADO PLUVIAL', 'ZONA CENTRAL - CASCO', 'VIEJO ORURO'];
+
+// Valor impreso: sin dato, una raya
+function vf(v, sufijo = '') {
+    if (v === null || v === undefined || v === '') return '—';
+    if (v === true) return 'SI';
+    if (v === false) return 'NO';
+    return `${v}${sufijo}`;
+}
+const metros = v => (v === null || v === undefined || v === '' ? '—' : `${Number(v)} m`);
+const coordenada = v => (v === null || v === undefined || v === '' ? '—' : Number(v).toFixed(3));
+
+function formatoImagen(datos) {
+    const m = /^data:image\/(\w+)/.exec(datos || '');
+    return m ? m[1].toUpperCase().replace('JPG', 'JPEG') : 'JPEG';
+}
+
+// Herramientas de dibujo sobre el documento (unidades: puntos)
+function pluma(doc) {
+    const h = {
+        texto(t, x, y, { tam = 10, negrita = false, alinear = 'left', ancho = null } = {}) {
+            const s = pdfTexto(t);
+            let size = tam;
+            doc.setFont('helvetica', negrita ? 'bold' : 'normal');
+            doc.setFontSize(size);
+            while (ancho && size > 6 && doc.getTextWidth(s) > ancho) doc.setFontSize(size -= 0.5);
+            doc.setTextColor(0, 0, 0);
+            doc.text(s, x, y, { align: alinear });
+        },
+        rect(x0, y0, x1, y1, relleno = null) {
+            if (relleno) doc.setFillColor(...relleno);
+            doc.rect(x0, y0, x1 - x0, y1 - y0, relleno ? 'FD' : 'S');
+        },
+        pildora(x0, y0, x1, y1, relleno = [255, 255, 255]) {
+            const r = (y1 - y0) / 2;
+            doc.setFillColor(...relleno);
+            doc.roundedRect(x0, y0, x1 - x0, y1 - y0, r, r, 'FD');
+        },
+        caja(x0, y0, x1, y1, r = 9) {
+            doc.setFillColor(255, 255, 255);
+            doc.roundedRect(x0, y0, x1 - x0, y1 - y0, r, r, 'FD');
+        },
+        linea(x0, y0, x1, y1) { doc.line(x0, y0, x1, y1); },
+        // Píldora verde con el título centrado
+        titulo(x0, y0, x1, y1, t, tam = 11.5) {
+            h.pildora(x0, y0, x1, y1, VERDE_FICHA);
+            h.texto(t, (x0 + x1) / 2, y1 - 4.3, { tam, negrita: true, alinear: 'center' });
+        },
+        // Píldora con etiqueta y valor
+        campo(x0, y0, x1, y1, etiqueta, valor, xValor) {
+            h.pildora(x0, y0, x1, y1);
+            h.texto(etiqueta, x0 + 9, y1 - 4.4, { negrita: true, ancho: xValor - x0 - 12 });
+            h.texto(valor, xValor, y1 - 4.4, { ancho: x1 - xValor - 9 });
+        },
+        imagen(datos, x0, y0, x1, y1, ajustar = true) {
+            if (!datos) return false;
+            try {
+                let x = x0, y = y0, w = x1 - x0, alto = y1 - y0;
+                if (ajustar) {
+                    const { width: pw, height: ph } = doc.getImageProperties(datos);
+                    const e = Math.min(w / pw, alto / ph);
+                    x += (w - pw * e) / 2; y += (alto - ph * e) / 2; w = pw * e; alto = ph * e;
+                }
+                doc.addImage(datos, formatoImagen(datos), x, y, w, alto, undefined, 'FAST');
+                return true;
+            } catch (error) {
+                return false;
+            }
+        },
+        // Código QR dibujado con cuadros (nítido al imprimir)
+        qr(texto, x, y, lado) {
+            if (!texto || !window.qrcode) return false;
+            const q = window.qrcode(0, 'M');
+            q.addData(texto);
+            q.make();
+            const n = q.getModuleCount(), m = lado / n;
+            doc.setFillColor(0, 0, 0);
+            for (let f = 0; f < n; f++) {
+                for (let c = 0; c < n; c++) if (q.isDark(f, c)) doc.rect(x + c * m, y + f * m, m + 0.05, m + 0.05, 'F');
+            }
+            return true;
+        },
+        // Texto de varias líneas dentro de un ancho
+        parrafo(t, x, y, ancho, { tam = 9, interlinea = 11, maxLineas = 4 } = {}) {
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(tam);
+            doc.setTextColor(0, 0, 0);
+            const lineas = doc.splitTextToSize(pdfTexto(t), ancho).slice(0, maxLineas);
+            doc.text(lineas, x, y, { lineHeightFactor: interlinea / tam });
+        }
+    };
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.85);
+    return h;
+}
+
+// Cabecera común: escudo, título, logo y número de registro. dy desplaza todo
+// (en las fichas de sumideros la cabecera está 5 pt más abajo).
+function cabeceraOficial(h, img, registroN, dy = 0) {
+    h.rect(21.7, 18.8 + dy, 591.4, 136.8 + dy);
+    h.rect(28.7, 22.8 + dy, 149.4, 129.4 + dy);
+    h.imagen(img.escudo, 44, 28 + dy, 131, 123 + dy);
+    h.rect(158, 22.8 + dy, 444.7, 129.4 + dy);
+    TITULO_CATASTRO.forEach((t, i) => h.texto(t, 301.35, 49.7 + dy + i * 21.95, { tam: 20, negrita: true, alinear: 'center' }));
+    h.rect(453.5, 22.8 + dy, 584.8, 113.6 + dy);
+    h.imagen(img.logo, 476, 28 + dy, 562, 109 + dy);
+    h.rect(453.5, 113.6 + dy, 584.8, 129.4 + dy);
+    h.texto('NRO. de Registro:', 457, 125.3 + dy, { tam: 9.5, negrita: true });
+    h.texto(vf(registroN), 545, 125.3 + dy, { tam: 9.5 });
+}
+
+// Fila de ubicación, croquis y esquema con medidas
+function ubicacionOficial(h, img, { y0, y1, abajo, etiquetaCodigo, codigo, medidas, imagenEsquema, nombreCanal }) {
+    h.rect(21.4, y0, 306, y1, VERDE_FICHA);
+    h.texto('UBICACIÓN GEOGRÁFICA', 163.7, y1 - 5.4, { tam: 9.5, negrita: true, alinear: 'center' });
+    h.rect(306, y0, 590.6, y1, VERDE_FICHA);
+    h.texto(etiquetaCodigo, 310, y1 - 5.4, { tam: 9.5, negrita: true });
+    h.texto(codigo, 375, y1 - 5.4, { tam: 9.5 });
+    let arriba = y1;
+    if (nombreCanal) {
+        h.rect(21.4, y1, 590.6, y1 + 13.2);
+        h.texto(`NOMBRE DEL CANAL: ${nombreCanal}`, 24, y1 + 10, { tam: 8.5, ancho: 560 });
+        arriba = y1 + 13.2;
+    }
+    h.rect(21.4, arriba, 306, abajo);
+    h.imagen(img.mapa, 21.8, arriba + 0.4, 305.6, abajo - 0.4, false);
+    h.rect(306, arriba, 590.6, abajo);
+    h.imagen(img.esquema, ...imagenEsquema, false);
+    medidas.forEach(([valor, x, y]) => h.texto(valor, x, y + 3.2, { tam: 8.5, alinear: 'center', ancho: 38 }));
+}
+
+function observacionesOficial(h, texto, [x0, y0, x1, y1], qr = null) {
+    h.caja(x0, y0, x1, y1);
+    h.texto('Observaciones:', x0 + 10, y0 + 13, { tam: 9.5, negrita: true });
+    h.parrafo(texto || '', x0 + 10, y0 + 26, x1 - x0 - 20, { maxLineas: Math.floor((y1 - y0 - 30) / 11) + 1 });
+    if (!qr) return;
+    const { caja, cuadro, xFoto, foto } = qr;
+    ['F', 'o', 't', 'o'].forEach((l, i) => h.texto(l, xFoto, y0 + 15 + i * 13, { tam: 9.5, alinear: 'center' }));
+    h.caja(...caja, 9);
+    if (!h.qr(foto, cuadro[0], cuadro[1], cuadro[2])) {
+        h.texto('Sin foto', (caja[0] + caja[2]) / 2, (caja[1] + caja[3]) / 2 + 3, { tam: 8, alinear: 'center' });
+    }
+}
+
+// Tubería que sale del elemento (la primera, como en las fichas oficiales)
+function tuberiaDeSalida(reg) {
+    const capa = reg.capa === 'camaras' ? 'tuberias_camaras' : 'tuberias_sumideros';
+    return (registro[capa] || []).filter(t => t.props.origen === reg.props.codigo)
+        .sort((a, b) => String(a.props.codigo).localeCompare(b.props.codigo))[0] || null;
+}
+
+// Página 2: tubería de salida y fotografía (y sumideros de aporte en cámaras)
+function paginaTuberiaOficial(doc, h, reg, fotoB64, medidas) {
+    const { marco, interior, titulos, xs, foto, cabecera, valores, filas, obs, divisor } = medidas;
+    const t = tuberiaDeSalida(reg)?.props || {};
+    const esCamara = reg.capa === 'camaras';
+    h.rect(...marco);
+    h.rect(...interior);
+    h.titulo(titulos[0][0], titulos[0][1], titulos[0][2], titulos[0][3], esCamara ? 'TUBERÍA DE SALIDA DE LA CÁMARA DE INSPECCIÓN' : 'TUBERÍA DE SALIDA DEL SUMIDERO', 9.5);
+    h.titulo(titulos[1][0], titulos[1][1], titulos[1][2], titulos[1][3], esCamara ? 'FOTO DE LA CÁMARA DE INSPECCIÓN' : 'FOTO DEL SUMIDERO', 9.5);
+    h.rect(...foto);
+    if (!h.imagen(fotoB64, foto[0] + 0.5, foto[1] + 0.5, foto[2] - 0.5, foto[3] - 0.5, false)) {
+        h.texto('Sin fotografía registrada', (foto[0] + foto[2]) / 2, (foto[1] + foto[3]) / 2, { tam: 9, alinear: 'center' });
+    }
+    // Código, función, material y diámetro en cuatro columnas
+    h.pildora(...cabecera);
+    h.pildora(...valores);
+    const bordes = [cabecera[0], ...xs, cabecera[2]];
+    const centros = bordes.slice(0, -1).map((b, i) => (b + bordes[i + 1]) / 2);
+    xs.forEach(x => h.linea(x, cabecera[1], x, valores[3]));
+    [[esCamara ? 'COD_TCAM:' : 'COD_TSUM:', t.codigo], ['Función:', t.funcion], ['Material:', t.material], ['Diámetro: (plg)', t.diametro_pulg]].forEach(([e, v], i) => {
+        h.texto(e, centros[i], cabecera[3] - 4.4, { negrita: true, alinear: 'center', ancho: bordes[i + 1] - bordes[i] - 6 });
+        h.texto(vf(v), centros[i], valores[3] - 4.4, { alinear: 'center', ancho: bordes[i + 1] - bordes[i] - 6 });
+    });
+    const longitud = t.distancia_campo_m ?? t.longitud_m;
+    [['Longitud de la tubería (m)', longitud == null ? '—' : numero(longitud, 3)],
+     ['Pendiente de la tubería:', (t.pendiente_pct ?? t.pendiente_registrada_pct) == null ? '—' : `${numero(t.pendiente_pct ?? t.pendiente_registrada_pct, 2)} %`],
+     ['Profundidad: (m)', vf(t.profundidad_m)],
+     ['Estado:', vf(t.estado)],
+     ['Origen:', vf(t.origen)],
+     ['Destino:', vf(conCanales(t.destino))]].forEach(([e, v], i) => {
+        const [y0, y1] = filas[i];
+        h.campo(cabecera[0], y0, cabecera[2], y1, e, v, divisor + 5);
+        h.linea(divisor, y0, divisor, y1);
+    });
+    h.caja(...obs);
+    h.texto('Observaciones:', obs[0] + 8, obs[1] + 12, { tam: 9.5, negrita: true });
+    h.parrafo(t.observaciones || (tuberiaDeSalida(reg) ? '' : 'Sin tubería de salida registrada.'), obs[0] + 8, obs[1] + 25, obs[2] - obs[0] - 16, { maxLineas: 2 });
+    if (!esCamara) return;
+
+    // Sumideros de aporte a la cámara
+    const aporte = (registro.sumideros || []).filter(s => s.props.camara_referencia === reg.props.codigo)
+        .sort((a, b) => String(a.props.codigo).localeCompare(b.props.codigo));
+    h.rect(22.9, 273, 593.5, 475.9);
+    h.titulo(163.5, 281, 448.5, 296.5, 'SUMIDEROS DE APORTE A LA CÁMARA DE INSPECCIÓN', 9.5);
+    h.pildora(27.6, 302.3, 585.6, 318.6);
+    h.caja(28.2, 322, 586, 470, 9);
+    const columnas = [27.6, 154.25, 245.1, 299.8, 585.6];
+    [154.25, 245.1, 299.8].forEach(x => h.linea(x, 302.3, x, 470));
+    ['Número de sumidero:', 'COD_SUM:', 'Apertura:', 'Justificación:'].forEach((e, i) =>
+        h.texto(e, (columnas[i] + columnas[i + 1]) / 2, 314.2, { negrita: true, alinear: 'center' }));
+    const alto = Math.min(13, 140 / Math.max(aporte.length, 1));
+    aporte.slice(0, 20).forEach((s, i) => {
+        const y = 336 + i * alto;
+        h.texto(s.props.codigo.slice(-2), 90.9, y, { tam: 9, alinear: 'center' });
+        h.texto(s.props.codigo, 158, y, { tam: 9, ancho: 84 });
+        h.texto(vf(s.props.apertura), 272.4, y, { tam: 9, alinear: 'center' });
+        h.texto(vf(s.props.justificacion), 304, y, { tam: 9, ancho: 276 });
+    });
+    if (!aporte.length) h.texto('Sin sumideros asociados', 306, 340, { tam: 9, alinear: 'center' });
+}
+
+function paginaCamaraOficial(doc, h, reg, img) {
+    const p = reg.props;
+    h.rect(15.6, 14.4, 597.6, 782.5);
+    cabeceraOficial(h, img, p.registro);
+    ubicacionOficial(h, img, {
+        y0: 143.8, y1: 162.5, abajo: 412.3, etiquetaCodigo: 'COD_CAM:', codigo: p.codigo,
+        imagenEsquema: [308, 164, 586, 403],
+        medidas: [[metros(p.diametro_tapa_m), 443.8, 186.7], [metros(p.prof_tub_entrada_m), 349.0, 322.2], [metros(p.prof_tub_salida_m), 533.1, 339.8]]
+    });
+    // Columna izquierda
+    h.campo(20.2, 415.8, 301.3, 432.1, 'Fecha:', vf(fecha(p.fecha_registro)), 83);
+    h.titulo(20.2, 436.3, 299.9, 454.4, 'COORDENADAS');
+    h.campo(20.2, 458.4, 301.3, 474.7, 'Latitud/Este:', coordenada(p.este), 148.5);
+    h.campo(20.2, 477.8, 301.3, 494.2, 'Longitud/Norte:', coordenada(p.norte), 148.5);
+    h.campo(20.2, 498.8, 301.3, 515.2, 'Elevación:', coordenada(p.elevacion_mds_m), 148.5);
+    h.titulo(20.2, 519.7, 299.9, 535.4, 'INFORMACIÓN DE LA CÁMARA');
+    h.campo(20.2, 540.2, 301.3, 556.6, 'Accesibilidad:', vf(p.accesibilidad), 152);
+    h.campo(20.2, 559.1, 301.3, 575.4, 'Localización de la cámara:', vf(p.localizacion), 165);
+    h.campo(20.2, 578.5, 301.3, 594.8, 'Tipo de Cámara:', vf(p.tipo_camara), 152);
+    h.campo(20.2, 597.7, 301.3, 614.0, 'Gestión:', vf(p.gestion), 152);
+    // Columna derecha
+    h.titulo(310.6, 415.8, 590.6, 431.6, 'DATOS');
+    [['Tipo de C.I.:', vf(p.tipo_ci), 435.8, 452.2], ['Altura Solera Cota:', metros(p.altura_solera_m), 458.4, 474.7],
+     ['Altura de la Tapa:', metros(p.altura_tapa_m), 477.8, 494.2], ['Diámetro de la Tapa:', metros(p.diametro_tapa_m), 498.8, 515.2],
+     ['Tipo de Tapa:', vf(p.tipo_tapa), 519.1, 535.4], ['Rasante:', vf(p.rasante), 540.2, 556.6],
+     ['Material Rasante:', vf(p.material_rasante), 559.1, 575.4], ['Ubicación', vf(p.ubicacion), 578.5, 594.8]]
+        .forEach(([e, v, y0, y1]) => h.campo(309.5, y0, 590.6, y1, e, v, 456));
+    h.pildora(309.5, 597.7, 590.6, 614.0);
+    h.texto('Nro. de entradas:', 316, 609.6, { negrita: true });
+    h.texto(vf(p.n_entradas), 410, 609.6);
+    h.texto('Nro. de salidas:', 456, 609.6, { negrita: true });
+    h.texto(vf(p.n_salidas), 545, 609.6);
+    h.linea(451.85, 435.8, 451.85, 614.0);
+    // Descripción
+    h.titulo(23.2, 619.2, 591.8, 635.0, 'DESCRIPCIÓN', 10);
+    const centros = [93.2, 226.5, 360.9, 511.9];
+    [[638.0, 653.8, ['Estado de la Tapa:', 'Drenaje:', 'Estado de la Cámara:', 'Localización de defectos:'], true],
+     [657.6, 673.4, [p.estado_fisico, p.funcionamiento_drenaje, p.estado_interior_form, p.localizacion_dano].map(v => vf(v)), false],
+     [676.7, 692.5, ['Condición de la Cámara:', 'Tipo de Sedimento:', 'Escalones:', 'Estado de los Escalones:'], true],
+     [696.1, 712.0, [p.condicion_interior, p.sedimentos, p.escalones, p.estado_escalones].map(v => vf(v)), false]]
+        .forEach(([y0, y1, textos, negrita]) => {
+            h.pildora(23.2, y0, 591.8, y1);
+            textos.forEach((t, i) => h.texto(t, centros[i], y1 - 4.4, { negrita, alinear: 'center', ancho: 128 }));
+        });
+    [163.25, 289.8, 432.0].forEach(x => h.linea(x, 637.6, x, 712.3));
+    observacionesOficial(h, p.observaciones, [23.3, 714.8, 501, 777.7], {
+        foto: p.foto_url || p.foto_descarga_url, xFoto: 512.4, caja: [523.7, 714.8, 588.8, 777.7], cuadro: [530.9, 720.7, 50.7]
+    });
+}
+
+function paginaSumideroOficial(doc, h, reg, img) {
+    const p = reg.props;
+    h.rect(10.6, 13.3, 602.4, 781.5);
+    // La cabecera de los sumideros está 4,7 pt más abajo y un poco más angosta
+    cabeceraOficial(h, img, p.registro, 4.7);
+    ubicacionOficial(h, img, {
+        y0: 148.5, y1: 167.1, abajo: 416.9, etiquetaCodigo: 'COD_SUM:', codigo: p.codigo,
+        imagenEsquema: [314, 172, 581, 404],
+        medidas: [[metros(p.largo_m), 466.4, 187.6], [metros(p.ancho_m), 375.9, 224.0], [metros(p.espesor_m), 530.9, 230.1]]
+    });
+    h.campo(20.3, 422.2, 301.4, 438.5, 'Fecha:', vf(fecha(p.fecha_registro)), 70);
+    h.titulo(20.3, 442.7, 299.9, 460.8, 'COORDENADAS');
+    h.campo(20.3, 464.8, 301.4, 481.1, 'Latitud/Este:', coordenada(p.este), 148.5);
+    h.campo(20.3, 484.3, 301.4, 500.6, 'Longitud/Norte:', coordenada(p.norte), 148.5);
+    h.campo(20.3, 505.3, 301.4, 521.6, 'Elevación:', coordenada(p.elevacion_mds_m), 148.5);
+    h.titulo(20.3, 526.1, 299.9, 541.9, 'INFORMACIÓN DEL SUMIDERO');
+    h.campo(20.3, 546.6, 301.4, 562.9, 'Apertura:', vf(p.apertura), 148.5);
+    h.campo(21.5, 565.5, 302.6, 581.8, 'Justificación:', vf(p.justificacion), 102);
+    h.campo(20.3, 585.0, 301.4, 601.3, 'Material Rasante:', vf(p.material_rasante), 148.5);
+    h.campo(20.3, 604.1, 301.4, 620.4, 'Estado de Sumidero:', vf(p.estado_estructura), 148.5);
+    h.titulo(312.4, 422.5, 592.0, 438.3, 'DATOS');
+    [['Tipo de rejilla.:', vf(p.tipo_rejilla), 442.7, 459.0], ['Estado de la rejilla', vf(p.estado_rejilla), 464.8, 481.1],
+     ['Altura Solera Cota:', metros(p.altura_solera_m), 484.3, 500.6], ['Ancho:', metros(p.ancho_m), 505.3, 521.6],
+     ['Largo:', metros(p.largo_m), 525.8, 542.1], ['Espesor:', metros(p.espesor_m), 546.6, 562.9],
+     ['Tipo de Sedimento:', vf(p.sedimento), 565.5, 581.8], ['Altura de Sedimento:', metros(p.altura_sedimento_m), 585.0, 601.3]]
+        .forEach(([e, v, y0, y1]) => h.campo(311.0, y0, 592.1, y1, e, v, 456));
+    h.pildora(311.0, 604.1, 592.1, 620.4);
+    h.texto('Condición:', 316, 616.0, { negrita: true });
+    h.texto(vf(p.condicion), 370, 616.0, { ancho: 78 });
+    h.texto('Cuneta:', 456, 616.0, { negrita: true });
+    h.texto(vf(p.cuneta), 520, 616.0);
+    h.linea(451.6, 442.7, 451.6, 620.4);
+    observacionesOficial(h, p.observaciones, [22.1, 628.6, 493.6, 704.9], {
+        foto: p.foto_url || p.foto_descarga_url, xFoto: 502.8, caja: [512.1, 628.6, 592.0, 704.9], cuadro: [522.6, 636.6, 59]
+    });
+}
+
+function paginaSeccionOficial(doc, h, reg, img) {
+    const p = reg.props;
+    h.rect(15.9, 12.4, 597.0, 779.6);
+    cabeceraOficial(h, img, p.registro);
+    ubicacionOficial(h, img, {
+        y0: 143.8, y1: 162.5, abajo: 411.9, etiquetaCodigo: 'COD_PROG:', codigo: p.progresiva,
+        nombreCanal: p.canal || '—',
+        imagenEsquema: [316, 176, 583, 385],
+        medidas: [[metros(p.ancho_superior_m), 457.9, 194.8], [metros(p.profundidad_c_m), 342.3, 278.6],
+                  [metros(p.profundidad_d_m), 558.5, 278.6], [metros(p.ancho_inferior_m), 457.9, 364.1]]
+    });
+    h.campo(21.1, 417.6, 300.1, 433.9, 'Fecha:', vf(fecha(p.fecha_registro)), 75);
+    h.titulo(21.1, 438.1, 300.1, 456.2, 'COORDENADAS');
+    h.campo(21.1, 458.9, 300.1, 475.2, 'Latitud/Este:', coordenada(p.este), 148.7);
+    h.campo(21.1, 479.7, 300.1, 496.0, 'Longitud/Norte:', coordenada(p.norte), 148.7);
+    h.campo(21.1, 500.6, 300.1, 516.9, 'Elevación:', coordenada(p.elevacion_mds_m), 148.7);
+    h.titulo(21.1, 521.4, 300.1, 537.2, 'SECCIÓN');
+    h.campo(21.1, 542.0, 300.1, 558.3, 'Ancho Superior (a):', metros(p.ancho_superior_m), 139.3);
+    h.campo(21.1, 560.8, 300.1, 577.1, 'Ancho Inferior (b):', metros(p.ancho_inferior_m), 139.3);
+    h.campo(21.1, 580.3, 300.1, 596.6, 'Profundidad (c):', metros(p.profundidad_c_m), 139.3);
+    h.campo(21.1, 599.5, 300.1, 615.8, 'Profundidad (d):', metros(p.profundidad_d_m), 139.3);
+    h.titulo(312.2, 417.6, 591.0, 433.4, 'INFORMACIÓN DEL CANAL');
+    [['Tipo de Revestimiento:', p.revestimiento, 438.1, 454.4], ['Tipo de Bóveda:', p.boveda, 460.2, 476.5],
+     ['Estado Estructural:', p.estado_estructural, 479.7, 496.0], ['Paso Vehicular:', p.paso_vehicular, 500.6, 516.9],
+     ['Paso Peatonal:', p.paso_peatonal, 521.2, 537.5], ['Riesgo peatonal y vehicular:', p.riesgo, 542.0, 558.3],
+     ['Conexión a alcantarillado pluvial:', p.conexion_pluvial, 560.8, 577.1],
+     ['Conexión a alcantarillado sanitario:', p.conexion_sanitaria, 580.3, 596.6],
+     ['Conexiones naturales:', p.conexion_natural, 599.5, 615.8]]
+        .forEach(([e, v, y0, y1]) => h.campo(312.2, y0, 590.6, y1, e, vf(v), 485.4));
+    h.linea(482.4, 438.1, 482.4, 615.8);
+    h.titulo(21.1, 620.5, 590.6, 635.5, 'DENTRO DEL CANAL', 10);
+    const bordes = [21.1, 137.7, 244.8, 355.5, 463.5, 590.6];
+    const centros = bordes.slice(0, -1).map((b, i) => (b + bordes[i + 1]) / 2);
+    h.pildora(21.1, 639.5, 590.6, 655.5);
+    h.pildora(21.1, 660.0, 590.6, 676.0);
+    bordes.slice(1, -1).forEach(x => h.linea(x, 639.5, x, 676.0));
+    ['Rejilla para sólidos:', 'Material de Rejilla:', 'Estado de la Rejilla:', 'Tipo de Sedimento:', 'Pendiente %:']
+        .forEach((e, i) => h.texto(e, centros[i], 651.1, { negrita: true, alinear: 'center', ancho: bordes[i + 1] - bordes[i] - 6 }));
+    [vf(p.rejilla_solidos), vf(p.material_rejilla), vf(p.estado_rejilla), vf(p.sedimentos),
+     p.pendiente_long_pct == null ? '—' : numero(p.pendiente_long_pct, 2)]
+        .forEach((v, i) => h.texto(v, centros[i], 671.6, { alinear: 'center', ancho: bordes[i + 1] - bordes[i] - 6 }));
+    observacionesOficial(h, p.observaciones, [21.1, 693, 590.6, 772]);
+}
+
+// Recorta la foto para que llene el recuadro, como en las fichas oficiales
+function recortarFoto(datos, ancho, alto) {
+    return new Promise(resolve => {
+        if (!datos) return resolve(null);
+        const img = new Image();
+        img.onload = () => {
+            const c = document.createElement('canvas');
+            c.width = Math.round(ancho * 2.5);  // ≈ 180 ppp en el recuadro
+            c.height = Math.round(alto * 2.5);
+            const e = Math.max(c.width / img.naturalWidth, c.height / img.naturalHeight);
+            const w = img.naturalWidth * e, h = img.naturalHeight * e;
+            c.getContext('2d').drawImage(img, (c.width - w) / 2, (c.height - h) / 2, w, h);
+            resolve(c.toDataURL('image/jpeg', 0.88));
+        };
+        img.onerror = () => resolve(null);
+        img.src = datos;
+    });
+}
+
+const FICHA_OFICIAL = {
+    camaras: { pagina: paginaCamaraOficial, mapa: [284.6, 249.8], segunda: {
+        marco: [18.0, 9.8, 600.0, 481.9], interior: [23.4, 15.0, 593.5, 268.6],
+        titulos: [[27.4, 29.0, 308.5, 44.9], [317.5, 29.0, 585.6, 44.9]], foto: [317.5, 54.0, 586.0, 217.6],
+        cabecera: [27.4, 54.5, 308.5, 70.8], valores: [27.4, 76.7, 308.5, 93.0], xs: [103.2, 169.9, 228.2], divisor: 163,
+        filas: [[99.0, 115.3], [119.3, 135.6], [139.1, 155.4], [159.8, 176.2], [180.1, 196.4], [200.4, 216.7]],
+        obs: [28.2, 222.1, 586.6, 262.0] } },
+    sumideros: { pagina: paginaSumideroOficial, mapa: [285.2, 249.8], segunda: {
+        marco: [10.6, 13.4, 602.4, 274.3], interior: [16.2, 19.4, 596.1, 268.8],
+        titulos: [[23.7, 29.8, 304.9, 45.6], [313.9, 29.8, 586.9, 45.6]], foto: [314.2, 55.2, 586.9, 217.9],
+        cabecera: [23.7, 55.2, 304.9, 71.5], valores: [24.0, 77.4, 305.2, 93.7], xs: [99.45, 166.25, 224.4], divisor: 163,
+        filas: [[99.7, 116.0], [120.0, 136.3], [140.3, 156.6], [160.6, 176.9], [180.9, 197.2], [201.2, 217.5]],
+        obs: [23.7, 222.5, 587.0, 262.5] } },
+    progresivas: { pagina: paginaSeccionOficial, mapa: [284.2, 236.2] }
+};
+
+async function generarFichaOficial(reg) {
+    const carga = document.createElement('div');
+    carga.className = 'carga';
+    carga.setAttribute('role', 'alertdialog');
+    carga.innerHTML = '<div class="carga__caja"><strong>Generando ficha técnica</strong><span>Preparando croquis, esquema y fotografía…</span><div class="carga__barra"></div></div>';
+    document.body.appendChild(carga);
+    try {
+        const def = FICHA_OFICIAL[reg.capa];
+        const p = reg.props;
+        const foto = def.segunda ? (p.foto_url || p.foto_descarga_url) : null;
+        const [ancho, alto] = def.mapa;
+        const [, escudo, logo, esquema, mapa, fotoB64] = await Promise.all([
+            Promise.all([cargarJsPDF(), (p.foto_url || p.foto_descarga_url) ? cargarScript(QR_JS).catch(() => null) : null]),
+            cargarImagenBase64(IMAGENES_FICHA.escudo),
+            cargarImagenBase64(IMAGENES_FICHA.logo),
+            cargarImagenBase64(IMAGENES_FICHA[reg.capa]),
+            generarMapaUbicacion(reg, 760, Math.round(760 * alto / ancho)),
+            foto ? cargarImagenBase64(foto) : null
+        ]);
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'pt', 'letter');
+        const h = pluma(doc);
+        def.pagina(doc, h, reg, { escudo, logo, esquema, mapa });
+        if (def.segunda) {
+            const [x0, y0, x1, y1] = def.segunda.foto;
+            doc.addPage();
+            pluma(doc);
+            paginaTuberiaOficial(doc, h, reg, await recortarFoto(fotoB64, x1 - x0, y1 - y0), def.segunda);
+        }
+        const nombre = String(p.codigo || 'elemento').replace(/[^A-Za-z0-9_+-]/g, '_');
+        doc.save(`Ficha_tecnica_${nombre}.pdf`);
+    } catch (error) {
+        console.error(error);
+        aviso('No se pudo generar la ficha técnica. Intente nuevamente.', 'error');
+    } finally {
+        carga.remove();
+    }
+}
+
 async function generarFichaPDF(reg) {
+    if (FICHA_OFICIAL[reg.capa]) return generarFichaOficial(reg);  // formato oficial del catastro
     const carga = document.createElement('div');
     carga.className = 'carga';
     carga.setAttribute('role', 'alertdialog');

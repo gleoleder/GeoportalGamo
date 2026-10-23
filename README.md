@@ -93,7 +93,12 @@ No abrir `index.html` con doble clic: `fetch()` no funciona sobre `file://`.
   ancho, letra y botones grandes): el elemento queda a la vista y marcado
   encima; se agranda arrastrándola hacia arriba y se cierra hacia abajo, con
   la ✕ o tocando el mapa. En la computadora sigue la ventanita sobre el mapa.
-- Ficha técnica en PDF: fotografía o perfil, mapa de ubicación preciso
+- Ficha técnica en PDF con el formato oficial del catastro para cámaras,
+  sumideros y secciones de canal (como las fichas de `2_FICHAS_TECNICAS`):
+  carta, cabecera con escudo y logo, esquema con medidas, código QR de la
+  foto y, en cámaras y sumideros, una segunda página con la tubería de salida,
+  la fotografía y los sumideros de aporte. Las imágenes están en `img/fichas/`.
+- Ficha técnica en PDF de tuberías y canales: fotografía o perfil, mapa de ubicación preciso
   (teselas y elementos proyectados en EPSG:3857, con el elemento resaltado,
   los vecinos, escala gráfica y norte) y atributos.
 - Búsqueda por código o nombre de canal, rutas (OSRM), geolocalización,
