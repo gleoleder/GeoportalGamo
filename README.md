@@ -60,6 +60,15 @@ La clave anon de `config.js` es pública por diseño: permite leer los datos e
 iniciar sesión, pero editar exige un usuario autorizado. Nunca poner aquí la contraseña de la base ni la clave
 service_role.
 
+## Supabase siempre activo
+
+El plan gratuito de Supabase pausa el proyecto tras 7 días sin actividad. La
+tarea `.github/workflows/mantener-supabase.yml` (GitHub Actions) consulta la
+base cada 2 días; si el repositorio lleva 45 días sin cambios, registra la
+fecha en `.github/ultima-consulta.txt` para que GitHub no desactive la tarea
+(lo hace a los 60 días sin actividad). Se puede ejecutar a mano en la pestaña
+*Actions* → *Mantener activo Supabase* → *Run workflow*.
+
 ## Cómo usar en local
 
 Abrir **`ABRIR_GEOPORTAL.bat`** (levanta un servidor local y abre el navegador).
