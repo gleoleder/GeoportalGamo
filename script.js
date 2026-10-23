@@ -488,9 +488,23 @@ function initMap() {
     map.on('zoomend', actualizarZoom);
     map.on('moveend', actualizarEtiquetas);
     actualizarZoom();
-    map.on('click', e => { if (seleccionandoPunto) agregarPuntoSeleccionado(e.latlng); });
-    map.on('popupopen', e => prepararFicha(e.popup));
-    map.on('popupclose', () => { fichaVisible = null; });
+    map.on('click', e => {
+        if (seleccionandoPunto) agregarPuntoSeleccionado(e.latlng);
+        else cerrarHoja();  // tocar el mapa fuera de un elemento cierra la ficha
+    });
+    map.on('popupopen', e => {
+        if (!enHoja()) {
+            prepararFicha(e.popup);
+            return;
+        }
+        // En el celular la misma ficha se muestra en la hoja inferior
+        const reg = fichaActual;
+        pasandoAHoja = true;
+        map.closePopup(e.popup);
+        pasandoAHoja = false;
+        mostrarHoja(reg);
+    });
+    map.on('popupclose', () => { if (!pasandoAHoja) fichaVisible = null; });
 }
 
 function agregarControles() {
@@ -811,6 +825,7 @@ function redibujar(datos) {
     if (!abierta) return;
     const reg = (registro[abierta.capa] || []).find(r => r.props.codigo === abierta.codigo);
     if (reg && map.hasLayer(grupos[reg.capa])) reg.layer.openPopup(reg.latlng || abierta.latlng);
+    else cerrarHoja();
 }
 
 let datosDibujados = false;
@@ -893,7 +908,7 @@ function construirCapa(capa) {
         }
 
         if (capa !== 'area') {
-            layer.bindPopup(() => htmlFicha(reg), { className: 'ficha', maxWidth: 400, minWidth: 280, autoPanPadding: [40, 40] });
+            layer.bindPopup(() => htmlFicha(reg), { className: 'ficha', maxWidth: 400, minWidth: 280, autoPanPadding: [40, 40], autoPan: !enHoja() });
             if (def.tipo === 'linea') {
                 const texto = capa === 'canales' ? nombreCanal(p.nombre)
                     : `${p.codigo}${p.pendiente_pct != null ? ` · pendiente ${numero(p.pendiente_pct, 2)} %` : ''}`;
@@ -1719,13 +1734,21 @@ function prepararFicha(popup) {
     if (!el) return;
     el._reg = fichaActual;
     fichaVisible = fichaActual ? { capa: fichaActual.capa, codigo: fichaActual.props.codigo, latlng: popup.getLatLng() } : null;
+    prepararContenidoFicha(el);
+}
+
+// Botones y fotografía de una ficha (en la ventanita del mapa o en la hoja)
+function prepararContenidoFicha(el) {
     if (!el.dataset.listo) {
         el.dataset.listo = '1';
         el.addEventListener('click', e => {
             const b = e.target.closest('[data-accion]');
             if (!b) return;
             if (b.dataset.accion === 'pdf') generarFichaPDF(el._reg);
-            if (b.dataset.accion === 'ruta') comoLlegar(el._reg);
+            if (b.dataset.accion === 'ruta') {
+                cerrarHoja();
+                comoLlegar(el._reg);
+            }
             if (b.dataset.accion === 'editar') abrirFormulario({ capa: el._reg.capa, accion: 'modificar', reg: el._reg });
             if (b.dataset.accion === 'eliminar') eliminarElemento(el._reg);
         });
@@ -1747,6 +1770,102 @@ function prepararFicha(popup) {
         });
         img.addEventListener('click', () => window.open(img.dataset.original, '_blank', 'noopener'));
     }
+}
+
+// ---------------------------------------------------------------------
+// Ficha en el celular: hoja que sube desde abajo
+// ---------------------------------------------------------------------
+// En pantallas angostas la ventanita del mapa tapa casi todo y obliga a
+// moverlo. La misma ficha se muestra en una hoja de todo el ancho, con letra
+// y botones más grandes: media pantalla (el elemento queda a la vista y
+// marcado encima) o completa al arrastrarla hacia arriba.
+const pantallaAngosta = window.matchMedia('(max-width: 760px)');
+let pasandoAHoja = false;
+let marcaSeleccion = null;
+
+function enHoja() {
+    return pantallaAngosta.matches;
+}
+
+function prepararHoja() {
+    const hoja = document.getElementById('hojaFicha');
+    document.getElementById('hojaCerrar').addEventListener('click', cerrarHoja);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarHoja(); });
+    pantallaAngosta.addEventListener('change', cerrarHoja);
+
+    // Arrastrar el borde superior: arriba agranda, abajo achica o cierra; un toque alterna
+    let inicio = null;
+    const asa = hoja.querySelector('.hoja__agarre');
+    asa.addEventListener('pointerdown', e => {
+        inicio = { y: e.clientY, t: Date.now() };
+        asa.setPointerCapture(e.pointerId);
+        hoja.classList.add('hoja--arrastrando');
+    });
+    asa.addEventListener('pointermove', e => {
+        if (!inicio) return;
+        const dy = e.clientY - inicio.y;
+        hoja.style.transform = `translateY(${Math.max(dy, -40)}px)`;
+    });
+    const soltar = e => {
+        if (!inicio) return;
+        const dy = e.clientY - inicio.y;
+        inicio = null;
+        hoja.classList.remove('hoja--arrastrando');
+        hoja.style.transform = '';
+        const completa = hoja.classList.contains('hoja--completa');
+        if (Math.abs(dy) < 8) hoja.classList.toggle('hoja--completa');
+        else if (dy < -40) hoja.classList.add('hoja--completa');
+        else if (dy > 70) completa ? hoja.classList.remove('hoja--completa') : cerrarHoja();
+    };
+    asa.addEventListener('pointerup', soltar);
+    asa.addEventListener('pointercancel', soltar);
+}
+
+function mostrarHoja(reg) {
+    if (!reg) return;
+    const hoja = document.getElementById('hojaFicha');
+    const contenido = document.getElementById('hojaContenido');
+    contenido.innerHTML = htmlFicha(reg);
+    hoja._reg = reg;
+    hoja.setAttribute('aria-label', `Ficha: ${FICHAS[reg.capa].tipo} ${tituloFicha(reg)}`);
+    prepararContenidoFicha(hoja);
+    fichaVisible = { capa: reg.capa, codigo: reg.props.codigo, latlng: centroDe(reg) };
+    hoja.classList.remove('hoja--completa');
+    hoja.hidden = false;
+    contenido.scrollTop = 0;
+    marcarSeleccion(reg);
+    requestAnimationFrame(() => centrarSobreHoja(reg));
+}
+
+function cerrarHoja() {
+    const hoja = document.getElementById('hojaFicha');
+    if (!hoja || hoja.hidden) return;
+    hoja.hidden = true;
+    hoja._reg = null;
+    fichaVisible = null;
+    if (marcaSeleccion) map.removeLayer(marcaSeleccion);
+    marcaSeleccion = null;
+}
+
+// Aro (puntos) o trazo ancho (líneas) que señala el elemento de la hoja
+function marcarSeleccion(reg) {
+    if (marcaSeleccion) map.removeLayer(marcaSeleccion);
+    marcaSeleccion = (reg.latlng
+        ? L.circleMarker(reg.latlng, { radius: 18, color: '#1d5a85', weight: 3, fill: false, interactive: false, pane: 'pEtiquetas' })
+        : L.geoJSON(reg.geometry, { style: { color: '#1d5a85', weight: 10, opacity: 0.4, lineCap: 'round' }, interactive: false, pane: 'pEtiquetas' })
+    ).addTo(map);
+}
+
+// Mueve el mapa para que el elemento quede centrado en la parte visible, encima de la hoja
+function centrarSobreHoja(reg) {
+    const hoja = document.getElementById('hojaFicha');
+    const caja = map.getContainer().getBoundingClientRect();
+    // Altura final de la hoja (offsetHeight no cuenta la animación de subida)
+    const libre = window.innerHeight - hoja.offsetHeight - caja.top;
+    const p = map.latLngToContainerPoint(centroDe(reg));
+    const dx = p.x - caja.width / 2;
+    const dy = p.y - Math.max(70, libre / 2);
+    if (Math.abs(dx) > 24 || Math.abs(dy) > 24) map.panBy([dx, dy], { duration: 0.3 });
 }
 
 function centroDe(reg) {
@@ -1919,6 +2038,7 @@ function construirResumen() {
 // ---------------------------------------------------------------------
 function alternarPanel(abrir) {
     const cerrado = abrir === undefined ? !document.body.classList.contains('panel-cerrado') : !abrir;
+    if (!cerrado && enHoja()) cerrarHoja();
     document.body.classList.toggle('panel-cerrado', cerrado);
     document.getElementById('btnPanel').setAttribute('aria-expanded', String(!cerrado));
     setTimeout(() => map.invalidateSize(), 260);
@@ -2111,6 +2231,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('buscador').addEventListener('keydown', e => {
         if (e.key === 'Enter') document.querySelector('#resultados button')?.click();
     });
+    prepararHoja();
     prepararSesion();
     cargarCapa();
 });
@@ -2308,6 +2429,7 @@ function pintarSesion() {
         controlEdicion = null;
     }
     map.closePopup();  // las fichas muestran u ocultan «Editar» según la sesión
+    cerrarHoja();
 }
 
 // ---- Barra «Agregar» y selección en el mapa ----------------------------
@@ -2363,6 +2485,7 @@ function iniciarModo(capa) {
         ? `Haga clic en ${deSumidero ? 'el sumidero' : 'la cámara'} de origen (de donde sale el agua).`
         : `Haga clic en el mapa donde está ${capa === 'camaras' ? 'la cámara' : 'el sumidero'}. Acérquese para ubicarlo con precisión.`);
     map.closePopup();
+    cerrarHoja();
     const c = map.getContainer();
     c.classList.add('seleccionando');
     c.addEventListener('pointerdown', alPresionarEdicion, true);
@@ -2522,6 +2645,7 @@ function abrirFormulario(op) {
     const { capa, accion, reg } = op;
     const nombre = NOMBRE_ELEMENTO[capa];
     map.closePopup();
+    cerrarHoja();
     document.getElementById('tituloEdicion').textContent = accion === 'agregar'
         ? `Agregar ${nombre}` : `Editar ${nombre} ${reg.props.codigo}`;
     document.getElementById('subtituloEdicion').textContent = accion === 'modificar'
@@ -2687,6 +2811,7 @@ async function eliminarElemento(reg) {
     try {
         const r = await editarEnBase(reg.capa, 'eliminar', reg.props.codigo);
         map.closePopup();
+        cerrarHoja();
         await mostrarResultado(reg.capa, null, r, `Se eliminó ${nombre} ${r.codigo}.`);
     } catch (error) {
         aviso(error.message, 'error');

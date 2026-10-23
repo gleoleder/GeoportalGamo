@@ -149,6 +149,14 @@
         <div id="map" role="region" aria-label="Mapa del sistema de drenaje"></div>
     </main>
 
+    <section class="hoja" id="hojaFicha" aria-label="Ficha del elemento" hidden>
+        <div class="hoja__agarre" title="Arrastre hacia arriba para ver más, hacia abajo para cerrar"><span class="hoja__asa" aria-hidden="true"></span></div>
+        <button type="button" class="hoja__cerrar" id="hojaCerrar" aria-label="Cerrar la ficha">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+        <div class="hoja__contenido" id="hojaContenido"></div>
+    </section>
+
     <div class="aviso" id="aviso" role="status" aria-live="polite" hidden></div>
 
     <dialog class="dialogo" id="dialogoSesion" aria-labelledby="tituloSesion">

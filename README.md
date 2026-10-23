@@ -89,6 +89,10 @@ No abrir `index.html` con doble clic: `fetch()` no funciona sobre `file://`.
 - Fichas emergentes con todos los atributos depurados, la fotografía de campo
   y las conexiones de cada elemento; las tuberías incluyen un perfil
   longitudinal (terreno, cámaras y fondo de la tubería) y sus cotas.
+- En el celular la ficha se abre en una hoja que sube desde abajo (todo el
+  ancho, letra y botones grandes): el elemento queda a la vista y marcado
+  encima; se agranda arrastrándola hacia arriba y se cierra hacia abajo, con
+  la ✕ o tocando el mapa. En la computadora sigue la ventanita sobre el mapa.
 - Ficha técnica en PDF: fotografía o perfil, mapa de ubicación preciso
   (teselas y elementos proyectados en EPSG:3857, con el elemento resaltado,
   los vecinos, escala gráfica y norte) y atributos.
