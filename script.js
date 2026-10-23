@@ -1973,7 +1973,7 @@ const DOMINIO_USUARIOS = 'geoportal.local';  // el mismo de usuarios_web.py
 const TABLA_EDICION = { camaras: 'camara', sumideros: 'sumidero', tuberias_camaras: 'tuberia_camara', tuberias_sumideros: 'tuberia_sumidero' };
 const NOMBRE_ELEMENTO = { camaras: 'cámara', sumideros: 'sumidero', tuberias_camaras: 'tubería de cámara', tuberias_sumideros: 'tubería de sumidero' };
 
-// [columna, etiqueta, tipo]. Tipos: codigo, lista:<dominio>, numero, entero, sino, fecha, texto.
+// [columna, etiqueta, tipo]. Tipos: codigo, foto, lista:<dominio>, numero, entero, sino, fecha, texto.
 // Los campos calculados (sector, certeza, elevación, pendiente…) los completa la base.
 const CAMPOS_TUBERIA = [
     ['funcion', 'Función', 'lista:funcion'],
@@ -1984,6 +1984,7 @@ const CAMPOS_TUBERIA = [
 const CAMPOS_EDICION = {
     camaras: [
         ['cod_cam', 'Código', 'codigo'],
+        ['foto_url', 'Fotografía', 'foto'],
         ['accesibilidad', 'Accesibilidad', 'lista:accesibilidad'],
         ['estado_fisico', 'Estado físico', 'lista:estado'],
         ['funcionamiento_drenaje', 'Funcionamiento del drenaje', 'lista:estado'],
@@ -2011,6 +2012,7 @@ const CAMPOS_EDICION = {
     ],
     sumideros: [
         ['cod_sum', 'Código', 'codigo'],
+        ['foto_url', 'Fotografía', 'foto'],
         ['apertura', 'Abierto en la inspección', 'sino'],
         ['condicion', 'Condición de funcionamiento', 'lista:condicion'],
         ['estado_estructura', 'Estado de la estructura', 'lista:estado'],
@@ -2330,6 +2332,19 @@ function htmlCampo([col, rotulo, tipo], valor, accion) {
         control = accion === 'agregar'
             ? `<input class="campo mono" id="${id}" name="${col}" value="${esc(v)}" autocomplete="off" spellcheck="false" autocapitalize="characters">`
             : `<input class="campo mono" id="${id}" value="${esc(v)}" readonly>`;
+    } else if (tipo === 'foto') {
+        return `<div class="campo-form campo-form--ancho"><span class="etiqueta">${esc(rotulo)}</span>
+            <div class="foto-campo" id="${id}">
+                <div class="foto-campo__vista">${v ? `<img src="${esc(urlsFotoDrive(v)[0])}" alt="Fotografía actual" referrerpolicy="no-referrer">` : '<span>Sin fotografía</span>'}</div>
+                <div>
+                    <div class="foto-campo__acciones">
+                        <label class="boton"><input type="file" accept="image/*" data-foto-archivo hidden>
+                            <svg viewBox="0 0 24 24"><path d="M4 7h3l2-2h6l2 2h3v12H4z"/><circle cx="12" cy="13" r="3.5"/></svg>${v ? 'Cambiar foto' : 'Agregar foto'}</label>
+                        ${v ? '<button type="button" class="boton boton--texto" data-foto-quitar>Quitar foto</button>' : ''}
+                    </div>
+                    <p class="ayuda" data-foto-estado>En el celular puede tomarla con la cámara. Se reduce antes de subirla.</p>
+                </div>
+            </div></div>`;
     } else if (tipo.startsWith('lista:')) {
         let valores = dominios?.[tipo.slice(6)] || [];
         if (v !== '' && !valores.includes(v)) valores = [v, ...valores];  // valor antiguo fuera de la lista
@@ -2366,6 +2381,9 @@ function abrirFormulario(op) {
         accion === 'modificar' ? valorActual(reg, c[0]) : c[2] === 'codigo' ? sugerido : c[2] === 'fecha' ? hoy() : null,
         accion)).join('');
     document.getElementById('edicionMensaje').textContent = '';
+    op.foto = null;  // { archivo } o { quitar: true }
+    const campoFoto = document.querySelector('#camposEdicion .foto-campo');
+    if (campoFoto) prepararCampoFoto(campoFoto, op);
 
     if (vistaPrevia) map.removeLayer(vistaPrevia);
     vistaPrevia = null;
@@ -2378,6 +2396,54 @@ function abrirFormulario(op) {
     }
     document.getElementById('dialogoEdicion').showModal();
     document.querySelector('#camposEdicion .campo:not([readonly])')?.focus();
+}
+
+function prepararCampoFoto(campo, op) {
+    const vista = campo.querySelector('.foto-campo__vista');
+    const estado = campo.querySelector('[data-foto-estado]');
+    campo.querySelector('[data-foto-archivo]').addEventListener('change', e => {
+        const archivo = e.target.files[0];
+        if (!archivo) return;
+        op.foto = { archivo };
+        vista.innerHTML = `<img src="${URL.createObjectURL(archivo)}" alt="Fotografía nueva">`;
+        estado.textContent = `${archivo.name} (${numero(archivo.size / 1048576, 1)} MB): se subirá al guardar.`;
+    });
+    campo.querySelector('[data-foto-quitar]')?.addEventListener('click', () => {
+        op.foto = { quitar: true };
+        vista.innerHTML = '<span>Sin fotografía</span>';
+        estado.textContent = 'La fotografía se quitará al guardar.';
+    });
+}
+
+// Reduce la foto (lado mayor 1600 px, JPEG) para subirla rápido desde el celular
+function reducirFoto(archivo, maximo = 1600, calidad = 0.82) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(archivo);
+        const img = new Image();
+        img.onload = () => {
+            const escala = Math.min(1, maximo / Math.max(img.naturalWidth, img.naturalHeight));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(img.naturalWidth * escala);
+            canvas.height = Math.round(img.naturalHeight * escala);
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            canvas.toBlob(b => (b ? resolve(b) : reject(new Error('No se pudo procesar la fotografía.'))), 'image/jpeg', calidad);
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error('El archivo elegido no es una imagen que el navegador pueda abrir (use JPG o PNG).'));
+        };
+        img.src = url;
+    });
+}
+
+async function subirFoto(capa, codigo, archivo) {
+    const foto = await reducirFoto(archivo);
+    const cliente = await clienteSupabase();
+    const ruta = `${TABLA_EDICION[capa]}/${codigo}/${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`;
+    const { error } = await cliente.storage.from('fotos').upload(ruta, foto, { contentType: 'image/jpeg', cacheControl: '31536000' });
+    if (error) throw new Error(`No se pudo subir la fotografía: ${error.message}`);
+    return cliente.storage.from('fotos').getPublicUrl(ruta).data.publicUrl;
 }
 
 function iguales(a, b) {
@@ -2433,7 +2499,7 @@ async function guardarFormulario(e) {
         mensaje.textContent = error.message;
         return;
     }
-    if (op.accion === 'modificar' && !Object.keys(atributos).length) {
+    if (op.accion === 'modificar' && !Object.keys(atributos).length && !op.foto) {
         mensaje.textContent = 'No hay cambios para guardar.';
         return;
     }
@@ -2441,6 +2507,15 @@ async function guardarFormulario(e) {
     boton.textContent = 'Guardando…';
     mensaje.textContent = '';
     try {
+        if (op.foto?.archivo) {
+            boton.textContent = 'Subiendo foto…';
+            const codigo = op.accion === 'agregar' ? atributos[CAMPOS_EDICION[op.capa][0][0]] : op.reg.props.codigo;
+            atributos.foto_url = await subirFoto(op.capa, codigo, op.foto.archivo);
+            boton.textContent = 'Guardando…';
+        } else if (op.foto?.quitar) {
+            atributos.foto_url = null;
+            atributos.foto_descarga_url = null;
+        }
         const r = await editarEnBase(op.capa, op.accion, op.reg?.props.codigo, atributos, op.geometria || null);
         document.getElementById('dialogoEdicion').close();
         const nombre = NOMBRE_ELEMENTO[op.capa];

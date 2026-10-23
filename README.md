@@ -49,8 +49,9 @@ anterior (lectura directa de GeoPackage) y ya no generan el formato que usa
 la aplicación.
 
 **Edición en la web**: con *Iniciar sesión*, los usuarios autorizados agregan
-cámaras, sumideros y tuberías (barra *Agregar* del mapa) y editan o eliminan
-elementos desde su ficha. La función `geoportal_editar` de la base verifica el
+cámaras, sumideros y tuberías (barra *Agregar* del mapa), editan o eliminan
+elementos desde su ficha y suben fotografías (se reducen en el navegador y se
+guardan en Supabase Storage). La función `geoportal_editar` de la base verifica el
 usuario y valida cada cambio igual que en QGIS; la respuesta trae los
 elementos afectados, que se dibujan al instante. Los usuarios se administran
 con `usuarios_web.py` del proyecto PostGIS.
