@@ -14,7 +14,6 @@ let currentRoutes = [];
 let flujoActivo = true;
 const flujos = {};
 let lienzos = {};
-let lienzoFlujo = null;
 let resumenDatos = null;
 let fuenteDatos = '';
 
@@ -310,8 +309,6 @@ function urlsFotoDrive(url) {
 // ---------------------------------------------------------------------
 // Símbolos
 // ---------------------------------------------------------------------
-const cacheIconos = {};
-
 function svgCamara(color, t = 26) {
     return `<svg width="${t}" height="${t}" viewBox="0 0 32 32" aria-hidden="true">
         <circle cx="16" cy="16" r="13.5" fill="#fff" stroke="#22303d" stroke-width="2"/>
@@ -342,24 +339,74 @@ function svgArea() {
         <rect x="2" y="2" width="18" height="12" fill="rgba(19,40,59,0.05)" stroke="#13283b" stroke-width="1.6" stroke-dasharray="4 2.5"/></svg>`;
 }
 
-function icono(capa, color) {
-    const clave = `${capa}|${color}`;
-    if (!cacheIconos[clave]) {
-        const def = {
-            camaras: [svgCamara(color), 26],
-            sumideros: [svgSumidero(color), 21],
-            progresivas: [svgProgresiva(color), 15]
-        }[capa];
-        cacheIconos[clave] = L.divIcon({
-            className: 'mk',
-            html: def[0],
-            iconSize: [def[1], def[1]],
-            iconAnchor: [def[1] / 2, def[1] / 2],
-            popupAnchor: [0, -def[1] / 2]
-        });
-    }
-    return cacheIconos[clave];
+// Cámaras, sumideros y secciones se dibujan en un lienzo (canvas), como los
+// mapas WebGL: sin un elemento de la página por punto, el mapa se mueve con
+// fluidez. Las formas replican los símbolos SVG de la leyenda.
+// Radio (px) a escala completa y reducción al alejarse, como antes con CSS.
+const RADIO_SIMBOLO = { camaras: 11, sumideros: 8.6, progresivas: 6.4 };
+function escalaSimbolo(z) {
+    return z < 15 ? 0.42 : z < 16 ? 0.58 : z < 18 ? 0.8 : 1;
 }
+
+const SimboloPunto = L.CircleMarker.extend({
+    _project() {
+        this._radius = RADIO_SIMBOLO[this.options.forma] * escalaSimbolo(this._map.getZoom());
+        L.CircleMarker.prototype._project.call(this);
+    },
+    _updatePath() {
+        this._renderer._dibujarSimbolo(this);
+    }
+});
+
+function trazoRedondeado(ctx, x, y, ancho, alto, r) {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + ancho, y, x + ancho, y + alto, r);
+    ctx.arcTo(x + ancho, y + alto, x, y + alto, r);
+    ctx.arcTo(x, y + alto, x, y, r);
+    ctx.arcTo(x, y, x + ancho, y, r);
+    ctx.closePath();
+}
+
+L.Canvas.include({
+    _dibujarSimbolo(capa) {
+        if (!this._drawing || capa._empty()) return;
+        const ctx = this._ctx, { x, y } = capa._point, R = capa._radius;
+        const color = capa.options.fillColor;
+        ctx.save();
+        ctx.lineCap = 'round';
+        if (capa.options.forma === 'camaras') {
+            const u = R / 13.5;  // unidades del SVG de 32 × 32
+            ctx.beginPath(); ctx.arc(x, y, 13.5 * u, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff'; ctx.fill();
+            ctx.lineWidth = 2 * u; ctx.strokeStyle = '#22303d'; ctx.stroke();
+            ctx.beginPath(); ctx.arc(x, y, 9.6 * u, 0, Math.PI * 2);
+            ctx.fillStyle = color; ctx.fill();
+            if (R > 5) {
+                ctx.beginPath();
+                [-3.2, 0, 3.2].forEach(d => { ctx.moveTo(x - 5.4 * u, y + d * u); ctx.lineTo(x + 5.4 * u, y + d * u); });
+                ctx.lineWidth = 1.7 * u; ctx.strokeStyle = '#fff'; ctx.stroke();
+            }
+        } else if (capa.options.forma === 'sumideros') {
+            const u = R / 11.5;  // unidades del SVG de 28 × 28
+            ctx.beginPath(); trazoRedondeado(ctx, x - 11.5 * u, y - 11.5 * u, 23 * u, 23 * u, 3 * u);
+            ctx.fillStyle = '#fff'; ctx.fill();
+            ctx.lineWidth = 2 * u; ctx.strokeStyle = '#22303d'; ctx.stroke();
+            ctx.beginPath(); trazoRedondeado(ctx, x - 8 * u, y - 8 * u, 16 * u, 16 * u, 1.5 * u);
+            ctx.fillStyle = color; ctx.fill();
+            if (R > 4) {
+                ctx.beginPath();
+                [-3.7, 0, 3.7].forEach(d => { ctx.moveTo(x + d * u, y - 6.4 * u); ctx.lineTo(x + d * u, y + 6.4 * u); });
+                ctx.lineCap = 'butt'; ctx.lineWidth = 1.5 * u; ctx.strokeStyle = '#fff'; ctx.stroke();
+            }
+        } else {
+            ctx.beginPath();
+            ctx.moveTo(x, y - R); ctx.lineTo(x + R, y); ctx.lineTo(x, y + R); ctx.lineTo(x - R, y); ctx.closePath();
+            ctx.fillStyle = color; ctx.fill();
+            ctx.lineWidth = 1.5 * R / 6.4; ctx.strokeStyle = '#fff'; ctx.stroke();
+        }
+        ctx.restore();
+    }
+});
 
 function simboloCapa(capa, color) {
     switch (capa) {
@@ -411,6 +458,7 @@ const MAPAS_BASE = {
     }
 };
 let baseActual = null;
+let claveBase = 'gris';
 
 function initMap() {
     map = L.map('map', { maxZoom: 22, zoomSnap: 0.25, zoomControl: false }).setView([-17.9647, -67.1064], 15);
@@ -423,21 +471,25 @@ function initMap() {
     map.getPane('pFlujo').style.pointerEvents = 'none';
     map.getPane('pEtiquetas').style.pointerEvents = 'none';
 
-    // Líneas y polígonos en canvas (más livianos que SVG con cientos de tramos);
-    // la animación del flujo usa SVG para poder animarse con CSS.
+    // Todo se dibuja en canvas: líneas, polígonos y puntos (más liviano que
+    // miles de elementos SVG o marcadores); la animación del flujo tiene su
+    // propio lienzo (CapaFlujo).
     lienzos = {
         pArea: L.canvas({ pane: 'pArea' }),
         pCanales: L.canvas({ pane: 'pCanales', tolerance: 4 }),
-        pTuberias: L.canvas({ pane: 'pTuberias', tolerance: 6 })
+        pTuberias: L.canvas({ pane: 'pTuberias', tolerance: 6 }),
+        pProgresivas: L.canvas({ pane: 'pProgresivas', tolerance: 3 }),
+        pSumideros: L.canvas({ pane: 'pSumideros', tolerance: 3 }),
+        pCamaras: L.canvas({ pane: 'pCamaras', tolerance: 3 })
     };
-    lienzoFlujo = L.svg({ pane: 'pFlujo' });
 
     L.control.zoom({ position: 'topright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
     agregarControles();
     L.control.scale({ position: 'bottomleft', imperial: false, maxWidth: 140 }).addTo(map);
-    cambiarMapaBase('gris');
+    cambiarMapaBase(claveBase);
 
     map.on('zoomend', actualizarZoom);
+    map.on('moveend', actualizarEtiquetas);
     actualizarZoom();
     map.on('click', e => { if (seleccionandoPunto) agregarPuntoSeleccionado(e.latlng); });
     map.on('popupopen', e => prepararFicha(e.popup));
@@ -496,10 +548,6 @@ function agregarControles() {
 
 function actualizarZoom() {
     const z = map.getZoom();
-    const el = map.getContainer();
-    el.classList.toggle('z-muy-lejos', z < 15);
-    el.classList.toggle('z-lejos', z >= 15 && z < 16);
-    el.classList.toggle('z-medio', z >= 16 && z < 18);
     actualizarEtiquetas();
     // Las secciones de canal solo se muestran de cerca
     if (grupos.progresivas) {
@@ -510,6 +558,7 @@ function actualizarZoom() {
 }
 
 function cambiarMapaBase(clave) {
+    claveBase = clave;
     if (baseActual) map.removeLayer(baseActual);
     baseActual = MAPAS_BASE[clave].capa().addTo(map);
     baseActual.bringToBack();
@@ -804,12 +853,13 @@ function construirCapa(capa) {
         if (def.tipo === 'punto') {
             const [lon, lat] = reg.geometry.coordinates;
             reg.latlng = L.latLng(lat, lon);
-            layer = L.marker(reg.latlng, {
-                icon: icono(capa, colorTema(capa, p)),
+            layer = new SimboloPunto(reg.latlng, {
+                forma: capa,
+                fillColor: colorTema(capa, p),
                 pane: def.pane,
-                keyboard: false,
-                title: p.codigo
+                renderer: lienzos[def.pane]
             });
+            layer.bindTooltip(p.codigo, { className: 'etiqueta-mapa', direction: 'top', offset: [0, -8] });
         } else if (capa === 'area') {
             layer = L.geoJSON(reg.geometry, {
                 pane: def.pane,
@@ -888,20 +938,29 @@ function crearEtiquetaPendiente(reg) {
     });
 }
 
-// Las etiquetas se crean la primera vez que se necesitan
+// Solo hay etiquetas de los tramos que se ven: se crean la primera vez que
+// entran en la vista y se quitan al salir (se revisa al terminar de mover).
 function actualizarEtiquetas() {
     if (!map) return;
     const z = map.getZoom();
+    const vista = map.getBounds().pad(0.25);
     ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
         if (!registro[capa]) return;
         const mostrar = etiquetasActivas && visibles[capa] && z >= CAPAS[capa].zoomEtiquetas;
-        if (mostrar && !etiquetas[capa]) {
-            etiquetas[capa] = L.layerGroup(registro[capa].map(crearEtiquetaPendiente).filter(Boolean));
+        const g = etiquetas[capa] ||= L.layerGroup();
+        if (!mostrar) {
+            if (map.hasLayer(g)) map.removeLayer(g);
+            return;
         }
-        const g = etiquetas[capa];
-        if (!g) return;
-        if (mostrar && !map.hasLayer(g)) g.addTo(map);
-        if (!mostrar && map.hasLayer(g)) map.removeLayer(g);
+        registro[capa].forEach(reg => {
+            reg.caja ||= reg.layer.getBounds();
+            const dentro = vista.intersects(reg.caja);
+            if (dentro && reg.etiqueta === undefined) reg.etiqueta = crearEtiquetaPendiente(reg);
+            if (!reg.etiqueta) return;
+            if (dentro && !g.hasLayer(reg.etiqueta)) g.addLayer(reg.etiqueta);
+            if (!dentro && g.hasLayer(reg.etiqueta)) g.removeLayer(reg.etiqueta);
+        });
+        if (!map.hasLayer(g)) g.addTo(map);
     });
 }
 
@@ -970,7 +1029,7 @@ function construirPanelCapas() {
     });
 
     document.getElementById('mapasBase').innerHTML = Object.entries(MAPAS_BASE).map(([clave, b]) =>
-        `<button type="button" role="radio" data-base="${clave}" aria-checked="${clave === 'gris'}">${esc(b.nombre)}</button>`).join('');
+        `<button type="button" role="radio" data-base="${clave}" aria-checked="${clave === claveBase}">${esc(b.nombre)}</button>`).join('');
     document.querySelectorAll('#mapasBase button').forEach(b => b.addEventListener('click', () => cambiarMapaBase(b.dataset.base)));
 }
 
@@ -1155,8 +1214,7 @@ function cambiarTema(capa, campo) {
     CAPAS[capa].tema = campo;
     registro[capa].forEach(reg => {
         const color = colorTema(capa, reg.props);
-        if (CAPAS[capa].tipo === 'punto') reg.layer.setIcon(icono(capa, color));
-        else reg.layer.setStyle({ color });
+        reg.layer.setStyle(CAPAS[capa].tipo === 'punto' ? { fillColor: color } : { color });
     });
     document.getElementById(`leyenda-${capa}`).innerHTML = htmlLeyenda(capa);
 }
@@ -1164,20 +1222,93 @@ function cambiarTema(capa, campo) {
 // ---------------------------------------------------------------------
 // Animación del sentido del flujo
 // ---------------------------------------------------------------------
-// Líneas del sentido del flujo: una capa SVG por tipo de tubería, animada
-// con CSS (styles.css). Se crean solo al activar la animación.
+// Un lienzo propio por tipo de tubería: en cada cuadro (≈ 30 por segundo)
+// se dibujan solo los tramos visibles con un desfase que avanza en el
+// sentido del flujo. Antes eran cientos de líneas SVG animadas con CSS, que
+// ocupaban la mitad del tiempo de dibujo del navegador.
+const CapaFlujo = L.Layer.extend({
+    options: { pane: 'pFlujo' },
+
+    initialize(lineas) {
+        this._lineas = lineas;  // [[LatLng, …], …]
+        this._cuadro = this._cuadro.bind(this);
+    },
+
+    onAdd(map) {
+        this._lienzo = L.DomUtil.create('canvas', 'lienzo-flujo');
+        this.getPane().appendChild(this._lienzo);
+        this._ctx = this._lienzo.getContext('2d');
+        map.on('zoomstart', this._ocultar, this);
+        map.on('zoomend viewreset resize', this._proyectar, this);
+        this._proyectar();
+        this._raf = requestAnimationFrame(this._cuadro);
+    },
+
+    onRemove(map) {
+        cancelAnimationFrame(this._raf);
+        map.off('zoomstart', this._ocultar, this);
+        map.off('zoomend viewreset resize', this._proyectar, this);
+        this._lienzo.remove();
+    },
+
+    _ocultar() {
+        this._lienzo.style.visibility = 'hidden';  // durante la animación del zoom
+        this._oculto = true;
+    },
+
+    // Coordenadas de capa: no cambian al desplazar el mapa, solo con el zoom
+    _proyectar() {
+        const map = this._map;
+        this._trazos = this._lineas.map(linea => {
+            const pts = linea.map(ll => map.latLngToLayerPoint(ll));
+            return { pts, caja: L.bounds(pts) };
+        });
+        const tam = map.getSize();
+        this._dpr = window.devicePixelRatio || 1;
+        this._lienzo.width = tam.x * this._dpr;
+        this._lienzo.height = tam.y * this._dpr;
+        this._lienzo.style.width = `${tam.x}px`;
+        this._lienzo.style.height = `${tam.y}px`;
+        this._lienzo.style.visibility = '';
+        this._oculto = false;
+    },
+
+    _cuadro(t) {
+        this._raf = requestAnimationFrame(this._cuadro);
+        if (this._oculto || t - (this._ultimo || 0) < 33) return;
+        this._ultimo = t;
+        const map = this._map, ctx = this._ctx, d = this._dpr;
+        const origen = map.containerPointToLayerPoint([0, 0]);
+        const tam = map.getSize();
+        const vista = L.bounds(origen, origen.add(tam));
+        L.DomUtil.setPosition(this._lienzo, origen);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, this._lienzo.width, this._lienzo.height);
+        ctx.setTransform(d, 0, 0, d, -origen.x * d, -origen.y * d);
+        ctx.beginPath();
+        for (const { pts, caja } of this._trazos) {
+            if (!vista.intersects(caja)) continue;
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        }
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.lineWidth = 1.6;
+        ctx.lineCap = 'round';
+        ctx.setLineDash([2, 14]);
+        ctx.lineDashOffset = -((t % 1100) / 1100) * 16;  // avanza de origen a destino
+        ctx.stroke();
+    }
+});
+
+function lineasDeCapa(capa) {
+    return registro[capa].flatMap(r => lineasDe(r.geometry).map(l => l.map(([lon, lat]) => L.latLng(lat, lon))));
+}
+
 function actualizarFlujo() {
     ['tuberias_camaras', 'tuberias_sumideros'].forEach(capa => {
         if (!registro[capa]) return;
         const mostrar = flujoActivo && visibles[capa];
-        if (mostrar && !flujos[capa]) {
-            flujos[capa] = L.geoJSON({ type: 'FeatureCollection', features: registro[capa].map(r => ({ type: 'Feature', geometry: r.geometry })) }, {
-                pane: 'pFlujo',
-                renderer: lienzoFlujo,
-                interactive: false,
-                style: { color: '#ffffff', weight: 1.6, opacity: 0.9, dashArray: '2 14', lineCap: 'round' }
-            });
-        }
+        if (mostrar && !flujos[capa]) flujos[capa] = new CapaFlujo(lineasDeCapa(capa));
         const f = flujos[capa];
         if (!f) return;
         if (mostrar && !map.hasLayer(f)) f.addTo(map);
@@ -1650,11 +1781,10 @@ function irA(reg) {
     if (reg.latlng) {
         alTerminarMovimiento(() => {
             reg.layer.openPopup();
-            const el = reg.layer.getElement();
-            if (el) {
-                el.classList.add('mk-resaltado');
-                setTimeout(() => el.classList.remove('mk-resaltado'), 3000);
-            }
+            // Aro que destaca el punto encontrado (los puntos están en canvas)
+            const aro = L.circleMarker(reg.latlng, { radius: 18, color: '#1d5a85', weight: 3, fill: false,
+                interactive: false, pane: 'pEtiquetas', className: 'resalte-punto' }).addTo(map);
+            setTimeout(() => map.removeLayer(aro), 3000);
         });
         map.setView(reg.latlng, Math.max(map.getZoom(), 19));
     } else {
