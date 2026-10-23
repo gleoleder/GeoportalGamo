@@ -33,6 +33,10 @@
             <span class="punto" aria-hidden="true"></span>
             <span class="texto">Cargando datos</span>
         </div>
+        <button class="barra__sesion" id="btnSesion" type="button" aria-haspopup="dialog" title="Iniciar sesión para editar" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg>
+            <span id="textoSesion">Iniciar sesión</span>
+        </button>
     </header>
 
     <main class="app">
@@ -133,7 +137,7 @@
                     <li>Las tuberías inferidas o no determinadas se dibujan con línea discontinua; los trazos blancos animados muestran el sentido del flujo.</li>
                     <li>La pendiente de las tuberías (%) se calcula en el sentido del flujo con las cotas de fondo: elevación del terreno (MDS) menos la profundidad medida en campo. Sin profundidades, en las tuberías de cámaras se usa el terreno entre cámaras. Un valor negativo indica contrapendiente.</li>
                     <li>Las alturas del MDS son elipsoidales; las pendientes dependen solo de las diferencias de altura.</li>
-                    <li>La base se edita desde QGIS; cada cambio guardado se refleja en este geoportal en pocos segundos.</li>
+                    <li>La base se edita desde QGIS o desde este geoportal (usuarios autorizados, con «Iniciar sesión»); cada cambio guardado se refleja aquí en pocos segundos y queda en el historial de ediciones.</li>
                     <li>Las secciones de canal estimadas no fueron medidas directamente.</li>
                 </ul>
 
@@ -146,6 +150,44 @@
     </main>
 
     <div class="aviso" id="aviso" role="status" aria-live="polite" hidden></div>
+
+    <dialog class="dialogo" id="dialogoSesion" aria-labelledby="tituloSesion">
+        <form id="formSesion" novalidate>
+            <div id="sesionEntrada">
+                <h2 id="tituloSesion">Iniciar sesión</h2>
+                <p class="ayuda">Solo los usuarios autorizados pueden agregar, editar o eliminar elementos.</p>
+                <label class="etiqueta" for="sesionUsuario">Usuario</label>
+                <input class="campo" id="sesionUsuario" autocomplete="username" autocapitalize="none" spellcheck="false">
+                <label class="etiqueta" for="sesionClave">Contraseña</label>
+                <input class="campo" id="sesionClave" type="password" autocomplete="current-password">
+            </div>
+            <div id="sesionActiva" hidden>
+                <h2>Sesión iniciada</h2>
+                <p class="ayuda" id="sesionNombre"></p>
+            </div>
+            <p class="mensaje error" id="sesionMensaje" role="alert"></p>
+            <div class="dialogo__acciones">
+                <button type="button" class="boton" data-cerrar>Cancelar</button>
+                <button type="button" class="boton" id="sesionSalir" hidden>Cerrar sesión</button>
+                <button type="submit" class="boton boton--primario" id="sesionEntrar">Entrar</button>
+            </div>
+        </form>
+    </dialog>
+
+    <dialog class="dialogo dialogo--formulario" id="dialogoEdicion" aria-labelledby="tituloEdicion">
+        <form id="formEdicion" novalidate>
+            <header class="dialogo__cabeza">
+                <h2 id="tituloEdicion"></h2>
+                <p id="subtituloEdicion"></p>
+            </header>
+            <div class="dialogo__cuerpo" id="camposEdicion"></div>
+            <p class="mensaje error" id="edicionMensaje" role="alert"></p>
+            <div class="dialogo__acciones">
+                <button type="button" class="boton" data-cerrar>Cancelar</button>
+                <button type="submit" class="boton boton--primario" id="edicionGuardar">Guardar</button>
+            </div>
+        </form>
+    </dialog>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="config.js"></script>

@@ -585,8 +585,39 @@ function estadoDatos(clase, texto) {
     el.title = texto;
 }
 
+// Solo lo que cambió en la base después de una versión (unos pocos KB)
+async function obtenerCambios(desde) {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    if (!cfg.supabaseUrl || !cfg.supabaseAnonKey || !desde) return null;
+    try {
+        const response = await fetch(`${cfg.supabaseUrl}/rest/v1/rpc/geoportal_cambios`,
+            { method: 'POST', headers: cabecerasSupabase(), body: JSON.stringify({ p_desde: desde }) });
+        if (response.ok) return await response.json();
+        console.warn('Supabase respondió', response.status);
+    } catch (error) {
+        console.warn('No se pudo consultar Supabase:', error);
+    }
+    return null;
+}
+
+const claveDe = f => `${f.properties?._capa}|${f.properties?._clave}`;
+
+function hayCambios(delta) {
+    return delta.completo || delta.features.length > 0 || delta.eliminados.length > 0;
+}
+
+// Reemplaza en los datos actuales los elementos nuevos, modificados o eliminados
+function combinarCambios(base, delta) {
+    if (delta.completo || !base) return { type: 'FeatureCollection', resumen: delta.resumen, features: delta.features };
+    const fuera = new Set([...delta.eliminados, ...delta.features.map(claveDe)]);
+    return {
+        type: 'FeatureCollection',
+        resumen: delta.resumen,
+        features: base.features.filter(f => !fuera.has(claveDe(f))).concat(delta.features)
+    };
+}
+
 async function cargarCapa() {
-    const enLinea = obtenerSupabase();
     let local = null;
     try {
         local = await obtenerLocal();
@@ -597,9 +628,15 @@ async function cargarCapa() {
         console.warn(error);
     }
 
-    const remoto = await enLinea;
+    // Con la copia local basta pedir lo que cambió después de ella
+    const delta = local ? await obtenerCambios(versionDe(local)) : null;
+    const remoto = delta ? combinarCambios(local, delta) : await obtenerSupabase();
     if (remoto) {
-        if (!local || !mismaVersion(versionDe(remoto), versionDe(local))) redibujar(remoto);
+        if (!local || hayCambios(delta || { completo: true })) redibujar(remoto);
+        else {
+            datosActuales = remoto;
+            resumenDatos = remoto.resumen;
+        }
         versionActual = versionDe(remoto);
         fuenteDatos = 'supabase';
         estadoDatos('conectado', 'Base PostGIS en línea');
@@ -628,6 +665,22 @@ let tiempoRealActivo = false;
 let actualizando = false;
 let temporizadorCambio = null;
 
+// Un solo cliente de supabase-js para el tiempo real y la sesión de usuario
+let promesaCliente = null;
+function clienteSupabase() {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    if (!promesaCliente) {
+        promesaCliente = cargarScript(SUPABASE_JS).then(() => {
+            const cliente = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+            // supabase-js recomienda no llamar a la API dentro de este aviso
+            cliente.auth.onAuthStateChange((evento, s) => setTimeout(() => cambioDeSesion(s), 0));
+            return cliente;
+        });
+        promesaCliente.catch(() => { promesaCliente = null; });
+    }
+    return promesaCliente;
+}
+
 function iniciarTiempoReal() {
     const cfg = window.GEOPORTAL_CONFIG || {};
     if (tiempoRealIniciado || !cfg.supabaseUrl) return;
@@ -635,8 +688,7 @@ function iniciarTiempoReal() {
     const revisar = async () => cambioDeVersion(await consultarVersion());
     setInterval(() => { if (!document.hidden && !tiempoRealActivo) revisar(); }, 60000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) revisar(); });
-    cargarScript(SUPABASE_JS).then(() => {
-        const cliente = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+    clienteSupabase().then(cliente => {
         cliente.channel('geoportal-estado')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'geoportal_estado' },
                 cambio => cambioDeVersion(cambio.new?.version))
@@ -667,7 +719,7 @@ function cambioDeVersion(version) {
     temporizadorCambio = setTimeout(actualizarDatos, 1200);
 }
 
-async function actualizarDatos() {
+async function actualizarDatos(mensaje) {
     if (actualizando) {
         temporizadorCambio = setTimeout(actualizarDatos, 1200);
         return;
@@ -675,13 +727,14 @@ async function actualizarDatos() {
     actualizando = true;
     estadoDatos('conectado', 'Actualizando datos…');
     try {
-        const datos = await obtenerSupabase();
-        if (datos && !mismaVersion(versionDe(datos), versionActual)) {
+        const delta = datosActuales ? await obtenerCambios(versionActual) : null;
+        const datos = delta ? combinarCambios(datosActuales, delta) : await obtenerSupabase();
+        if (datos && (delta ? hayCambios(delta) : !mismaVersion(versionDe(datos), versionActual))) {
             redibujar(datos);
             versionActual = versionDe(datos);
             fuenteDatos = 'supabase';
             construirResumen();
-            aviso(`Datos actualizados desde la base (${horaVersion(versionActual)}).`);
+            aviso(mensaje || `Datos actualizados desde la base (${horaVersion(versionActual)}).`);
         }
     } finally {
         actualizando = false;
@@ -705,10 +758,12 @@ function redibujar(datos) {
 }
 
 let datosDibujados = false;
+let datosActuales = null;  // FeatureCollection dibujado (se le aplican los cambios)
 
 function mostrarDatos(geojson) {
     const features = geojson.features || [];
     if (!features.length) return;
+    datosActuales = geojson;
     if (datosDibujados) limpiarCapas();
     resumenDatos = geojson.resumen || null;
     ORDEN_PANEL.forEach(c => {
@@ -1457,6 +1512,11 @@ function htmlFicha(reg) {
                     <svg viewBox="0 0 24 24"><path d="M12 21s-6-5.6-6-11a6 6 0 0 1 12 0c0 5.4-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/></svg>Cómo llegar</button>
                 ${foto ? `<a class="boton" href="${esc(foto)}" target="_blank" rel="noopener">
                     <svg viewBox="0 0 24 24"><path d="M4 7h3l2-2h6l2 2h3v12H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Foto original</a>` : ''}
+                ${puedeEditar && TABLA_EDICION[reg.capa] ? `
+                    <button type="button" class="boton" data-accion="editar">
+                        <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>Editar</button>
+                    <button type="button" class="boton boton--peligro" data-accion="eliminar">
+                        <svg viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6M7 7l1 13h8l1-13M9 7V4h6v3"/></svg>Eliminar</button>` : ''}
             </footer>
         </article>`;
 }
@@ -1513,6 +1573,8 @@ function prepararFicha(popup) {
             if (!b) return;
             if (b.dataset.accion === 'pdf') generarFichaPDF(el._reg);
             if (b.dataset.accion === 'ruta') comoLlegar(el._reg);
+            if (b.dataset.accion === 'editar') abrirFormulario({ capa: el._reg.capa, accion: 'modificar', reg: el._reg });
+            if (b.dataset.accion === 'eliminar') eliminarElemento(el._reg);
         });
     }
     // El contenido se regenera en cada apertura: la foto se prepara cada vez
@@ -1897,8 +1959,529 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('buscador').addEventListener('keydown', e => {
         if (e.key === 'Enter') document.querySelector('#resultados button')?.click();
     });
+    prepararSesion();
     cargarCapa();
 });
+
+// =====================================================================
+// Edición desde el geoportal (usuarios autorizados)
+// =====================================================================
+// Las cuentas son de Supabase Auth (las crea usuarios_web.py del proyecto
+// PostGIS). La base solo acepta cambios de usuarios autorizados y los valida
+// igual que las ediciones de QGIS; el mapa se actualiza en tiempo real.
+const DOMINIO_USUARIOS = 'geoportal.local';  // el mismo de usuarios_web.py
+const TABLA_EDICION = { camaras: 'camara', sumideros: 'sumidero', tuberias_camaras: 'tuberia_camara', tuberias_sumideros: 'tuberia_sumidero' };
+const NOMBRE_ELEMENTO = { camaras: 'cámara', sumideros: 'sumidero', tuberias_camaras: 'tubería de cámara', tuberias_sumideros: 'tubería de sumidero' };
+
+// [columna, etiqueta, tipo]. Tipos: codigo, lista:<dominio>, numero, entero, sino, fecha, texto.
+// Los campos calculados (sector, certeza, elevación, pendiente…) los completa la base.
+const CAMPOS_TUBERIA = [
+    ['funcion', 'Función', 'lista:funcion'],
+    ['material', 'Material', 'lista:material_tuberia'],
+    ['diametro_pulg', 'Diámetro (pulg)', 'numero'],
+    ['profundidad_m', 'Profundidad (m)', 'numero']
+];
+const CAMPOS_EDICION = {
+    camaras: [
+        ['cod_cam', 'Código', 'codigo'],
+        ['accesibilidad', 'Accesibilidad', 'lista:accesibilidad'],
+        ['estado_fisico', 'Estado físico', 'lista:estado'],
+        ['funcionamiento_drenaje', 'Funcionamiento del drenaje', 'lista:estado'],
+        ['condicion_interior', 'Condición interior', 'lista:condicion'],
+        ['localizacion', 'Localización', 'lista:localizacion'],
+        ['ubicacion', 'Ubicación en la vía', 'lista:ubicacion'],
+        ['tipo_camara', 'Tipo de cámara', 'lista:tipo_camara'],
+        ['tipo_ci', 'Configuración', 'lista:tipo_ci'],
+        ['tipo_tapa', 'Tipo de tapa', 'lista:tipo_tapa'],
+        ['diametro_tapa_m', 'Diámetro de la tapa (m)', 'numero'],
+        ['altura_tapa_m', 'Altura de la tapa (m)', 'numero'],
+        ['rasante', 'Rasante', 'lista:rasante'],
+        ['material_rasante', 'Material de la rasante', 'lista:material_rasante'],
+        ['altura_solera_m', 'Altura de solera (m)', 'numero'],
+        ['prof_tub_entrada_m', 'Profundidad de entrada (m)', 'numero'],
+        ['prof_tub_salida_m', 'Profundidad de salida (m)', 'numero'],
+        ['n_entradas', 'Tuberías de entrada', 'entero'],
+        ['n_salidas', 'Tuberías de salida', 'entero'],
+        ['localizacion_dano', 'Localización del daño', 'lista:localizacion_dano'],
+        ['escalones', 'Escalones', 'sino'],
+        ['estado_escalones', 'Estado de los escalones', 'lista:estado'],
+        ['gestion', 'Gestión de construcción', 'entero'],
+        ['fecha_registro', 'Fecha de registro', 'fecha'],
+        ['observaciones', 'Observaciones', 'texto']
+    ],
+    sumideros: [
+        ['cod_sum', 'Código', 'codigo'],
+        ['apertura', 'Abierto en la inspección', 'sino'],
+        ['condicion', 'Condición de funcionamiento', 'lista:condicion'],
+        ['estado_estructura', 'Estado de la estructura', 'lista:estado'],
+        ['tipo_rejilla', 'Tipo de rejilla', 'lista:tipo_rejilla'],
+        ['estado_rejilla', 'Estado de la rejilla', 'lista:estado'],
+        ['sedimento', 'Tipo de sedimento', 'lista:sedimento'],
+        ['altura_sedimento_m', 'Altura de sedimento (m)', 'numero'],
+        ['material_rasante', 'Material de la rasante', 'lista:material_rasante'],
+        ['cuneta', 'Cuneta', 'sino'],
+        ['ancho_m', 'Ancho (m)', 'numero'],
+        ['largo_m', 'Largo (m)', 'numero'],
+        ['espesor_m', 'Espesor de la rejilla (m)', 'numero'],
+        ['altura_solera_m', 'Altura de solera (m)', 'numero'],
+        ['fecha_registro', 'Fecha de registro', 'fecha'],
+        ['justificacion', 'Motivo (apertura)', 'texto'],
+        ['observaciones', 'Observaciones', 'texto']
+    ],
+    tuberias_camaras: [...CAMPOS_TUBERIA, ['estado', 'Estado', 'lista:estado'], ['observaciones', 'Observaciones', 'texto']],
+    tuberias_sumideros: [...CAMPOS_TUBERIA, ['observaciones', 'Observaciones', 'texto']]
+};
+
+let sesion = null;          // { correo, usuario }
+let puedeEditar = false;
+let dominios = null;        // listas controladas para los formularios
+let controlEdicion = null;
+let modoEdicion = null;     // agregar con clics en el mapa
+let capaGuia = null;        // marcas mientras se dibuja una tubería
+let vistaPrevia = null;     // elemento nuevo mientras el formulario está abierto
+let formularioActual = null;
+let inicioClic = null;
+
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+const primeraMayuscula = t => t.charAt(0).toUpperCase() + t.slice(1);
+
+// ---- Sesión ------------------------------------------------------------
+function prepararSesion() {
+    const cfg = window.GEOPORTAL_CONFIG || {};
+    if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) return;
+    document.getElementById('btnSesion').hidden = false;
+    document.getElementById('btnSesion').addEventListener('click', abrirSesion);
+    document.getElementById('formSesion').addEventListener('submit', entrar);
+    document.getElementById('sesionSalir').addEventListener('click', salir);
+    document.getElementById('formEdicion').addEventListener('submit', guardarFormulario);
+    document.getElementById('dialogoEdicion').addEventListener('close', () => {
+        if (vistaPrevia) map.removeLayer(vistaPrevia);
+        vistaPrevia = null;
+    });
+    document.querySelectorAll('dialog [data-cerrar]').forEach(b => b.addEventListener('click', () => b.closest('dialog').close()));
+}
+
+function abrirSesion() {
+    const activa = !!sesion;
+    document.getElementById('sesionEntrada').hidden = activa;
+    document.getElementById('sesionActiva').hidden = !activa;
+    document.getElementById('sesionEntrar').hidden = activa;
+    document.getElementById('sesionSalir').hidden = !activa;
+    document.querySelector('#dialogoSesion [data-cerrar]').textContent = activa ? 'Cerrar' : 'Cancelar';
+    if (activa) {
+        document.getElementById('sesionNombre').textContent = puedeEditar
+            ? `Usuario «${sesion.usuario}», autorizado para editar. Use la barra «Agregar» del mapa o los botones «Editar» y «Eliminar» de cada ficha.`
+            : `Usuario «${sesion.usuario}», sin permiso de edición. Pida al administrador que lo autorice.`;
+    }
+    document.getElementById('sesionMensaje').textContent = '';
+    document.getElementById('dialogoSesion').showModal();
+    if (!activa) document.getElementById('sesionUsuario').focus();
+    clienteSupabase().catch(() => {});  // la biblioteca se descarga mientras se escribe
+}
+
+async function entrar(e) {
+    e.preventDefault();
+    const usuario = document.getElementById('sesionUsuario').value.trim().toLowerCase();
+    const clave = document.getElementById('sesionClave').value;
+    const mensaje = document.getElementById('sesionMensaje');
+    const boton = document.getElementById('sesionEntrar');
+    if (!usuario || !clave) {
+        mensaje.textContent = 'Escriba su usuario y su contraseña.';
+        return;
+    }
+    boton.disabled = true;
+    boton.textContent = 'Entrando…';
+    mensaje.textContent = '';
+    try {
+        const cliente = await clienteSupabase();
+        const correo = usuario.includes('@') ? usuario : `${usuario}@${DOMINIO_USUARIOS}`;
+        const { error } = await cliente.auth.signInWithPassword({ email: correo, password: clave });
+        if (error) {
+            mensaje.textContent = /invalid login credentials/i.test(error.message)
+                ? 'Usuario o contraseña incorrectos.' : `No se pudo iniciar sesión: ${error.message}`;
+            return;
+        }
+        document.getElementById('sesionClave').value = '';
+        document.getElementById('dialogoSesion').close();
+    } catch (error) {
+        mensaje.textContent = 'No se pudo conectar con el servidor. Revise su conexión a internet.';
+    } finally {
+        boton.disabled = false;
+        boton.textContent = 'Entrar';
+    }
+}
+
+async function salir() {
+    const cliente = await clienteSupabase();
+    await cliente.auth.signOut();
+    document.getElementById('dialogoSesion').close();
+}
+
+// Inicio o cierre de sesión (también al volver a abrir la página con la sesión guardada)
+async function cambioDeSesion(s) {
+    const correo = s?.user?.email || null;
+    if (correo === (sesion?.correo || null)) return;  // renovación del token
+    sesion = correo ? { correo, usuario: correo.endsWith(`@${DOMINIO_USUARIOS}`) ? correo.split('@')[0] : correo } : null;
+    puedeEditar = false;
+    if (sesion) {
+        try {
+            const cliente = await clienteSupabase();
+            const permiso = await cliente.rpc('geoportal_puede_editar');
+            if (permiso.data === true) {
+                dominios ||= (await cliente.rpc('geoportal_dominios')).data || {};
+                puedeEditar = true;
+            }
+        } catch (error) {
+            console.warn('No se pudo verificar el permiso de edición:', error);
+        }
+        aviso(puedeEditar ? `Sesión iniciada: ${sesion.usuario}. Puede agregar y editar elementos.`
+            : `Sesión iniciada: ${sesion.usuario}, sin permiso de edición.`, puedeEditar ? '' : 'error');
+    } else {
+        aviso('Sesión cerrada.');
+    }
+    pintarSesion();
+}
+
+function pintarSesion() {
+    const boton = document.getElementById('btnSesion');
+    document.getElementById('textoSesion').textContent = sesion ? sesion.usuario : 'Iniciar sesión';
+    boton.classList.toggle('activa', !!sesion);
+    boton.title = sesion ? 'Sesión iniciada (clic para cerrarla)' : 'Iniciar sesión para editar';
+    if (puedeEditar && !controlEdicion) controlEdicion = crearControlEdicion().addTo(map);
+    if (!puedeEditar && controlEdicion) {
+        cancelarModo();
+        controlEdicion.remove();
+        controlEdicion = null;
+    }
+    map.closePopup();  // las fichas muestran u ocultan «Editar» según la sesión
+}
+
+// ---- Barra «Agregar» y selección en el mapa ----------------------------
+function crearControlEdicion() {
+    const Control = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd() {
+            const div = L.DomUtil.create('div', 'edicion');
+            div.setAttribute('role', 'toolbar');
+            div.setAttribute('aria-label', 'Agregar elementos');
+            div.innerHTML = `
+                <span class="edicion__titulo">Agregar</span>
+                ${Object.keys(TABLA_EDICION).map(capa => `
+                    <button type="button" data-agregar="${capa}" aria-pressed="false">${simboloCapa(capa)}<span>${esc(primeraMayuscula(NOMBRE_ELEMENTO[capa]))}</span></button>`).join('')}
+                <div class="edicion__guia" role="status" hidden><span></span><button type="button" data-cancelar>Cancelar</button></div>`;
+            L.DomEvent.disableClickPropagation(div);
+            L.DomEvent.disableScrollPropagation(div);
+            div.addEventListener('click', e => {
+                const b = e.target.closest('button');
+                if (b?.dataset.agregar) iniciarModo(b.dataset.agregar);
+                if (b?.hasAttribute('data-cancelar')) cancelarModo();
+            });
+            return div;
+        }
+    });
+    return new Control();
+}
+
+function guia(texto) {
+    const el = document.querySelector('.edicion__guia');
+    if (!el) return;
+    el.hidden = !texto;
+    if (texto) el.querySelector('span').textContent = texto;
+}
+
+function iniciarModo(capa) {
+    cancelarModo();
+    const tuberia = capa.startsWith('tuberias');
+    const deSumidero = capa === 'tuberias_sumideros';
+    modoEdicion = {
+        capa, tuberia, origen: null,
+        origenes: deSumidero ? ['sumideros'] : ['camaras'],
+        destinos: deSumidero ? ['camaras', 'sumideros'] : ['camaras']
+    };
+    // Los elementos que se deben tocar tienen que verse en el mapa
+    [...modoEdicion.origenes, ...modoEdicion.destinos].forEach(c => {
+        if (tuberia && !visibles[c]) {
+            document.getElementById(`chk-${c}`).checked = true;
+            alternarCapa(c, true);
+        }
+    });
+    guia(tuberia
+        ? `Haga clic en ${deSumidero ? 'el sumidero' : 'la cámara'} de origen (de donde sale el agua).`
+        : `Haga clic en el mapa donde está ${capa === 'camaras' ? 'la cámara' : 'el sumidero'}. Acérquese para ubicarlo con precisión.`);
+    map.closePopup();
+    const c = map.getContainer();
+    c.classList.add('seleccionando');
+    c.addEventListener('pointerdown', alPresionarEdicion, true);
+    c.addEventListener('click', alClicEdicion, true);
+    map.on('mousemove', alMoverEdicion);
+    document.addEventListener('keydown', alTeclaEdicion);
+    document.querySelectorAll('.edicion [data-agregar]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.agregar === capa)));
+}
+
+function cancelarModo() {
+    if (!modoEdicion) return;
+    modoEdicion = null;
+    const c = map.getContainer();
+    c.classList.remove('seleccionando');
+    c.removeEventListener('pointerdown', alPresionarEdicion, true);
+    c.removeEventListener('click', alClicEdicion, true);
+    map.off('mousemove', alMoverEdicion);
+    document.removeEventListener('keydown', alTeclaEdicion);
+    if (capaGuia) map.removeLayer(capaGuia);
+    capaGuia = null;
+    guia(null);
+    document.querySelectorAll('.edicion [data-agregar]').forEach(b => b.setAttribute('aria-pressed', 'false'));
+}
+
+function alPresionarEdicion(e) {
+    inicioClic = [e.clientX, e.clientY];
+}
+
+function alTeclaEdicion(e) {
+    if (e.key === 'Escape') cancelarModo();
+}
+
+function alMoverEdicion(e) {
+    const linea = capaGuia?.getLayers().find(l => l instanceof L.Polyline && !(l instanceof L.CircleMarker));
+    if (modoEdicion?.origen && linea) linea.setLatLngs([modoEdicion.origen.latlng, e.latlng]);
+}
+
+// Se captura el clic antes que Leaflet: mientras se agrega no se abren fichas
+function alClicEdicion(e) {
+    if (e.target.closest('.leaflet-control')) return;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    if (inicioClic && Math.hypot(e.clientX - inicioClic[0], e.clientY - inicioClic[1]) > 6) return;  // fue un arrastre
+    const m = modoEdicion;
+    const latlng = map.mouseEventToLatLng(e);
+    if (!m.tuberia) {
+        cancelarModo();
+        abrirFormulario({ capa: m.capa, accion: 'agregar', latlng,
+            geometria: { type: 'Point', coordinates: [redondear(latlng.lng), redondear(latlng.lat)] } });
+        return;
+    }
+    const reg = elementoCercano(latlng, m.origen ? m.destinos : m.origenes);
+    if (!reg || reg === m.origen) {
+        aviso(m.origen ? 'Haga clic sobre el elemento de destino.' : 'Haga clic sobre el elemento de origen.');
+        return;
+    }
+    if (!m.origen) {
+        m.origen = reg;
+        capaGuia = L.layerGroup([
+            L.circleMarker(reg.latlng, { radius: 15, color: '#a8423a', weight: 3, fill: false, interactive: false, pane: 'pEtiquetas' }),
+            L.polyline([reg.latlng, reg.latlng], { color: '#a8423a', weight: 3, dashArray: '6 6', interactive: false, pane: 'pEtiquetas' })
+        ]).addTo(map);
+        guia(`Origen: ${reg.props.codigo}. Ahora haga clic en ${m.capa === 'tuberias_sumideros' ? 'la cámara o el sumidero' : 'la cámara'} de destino.`);
+        return;
+    }
+    cancelarModo();
+    abrirFormulario({ capa: m.capa, accion: 'agregar', origen: m.origen, destino: reg,
+        geometria: { type: 'LineString', coordinates: [m.origen.geometry.coordinates, reg.geometry.coordinates] } });
+}
+
+function redondear(v) {
+    return Math.round(v * 1e7) / 1e7;
+}
+
+function elementoCercano(latlng, capas, tolerancia = 24) {
+    const p = map.latLngToContainerPoint(latlng);
+    let mejor = null, minimo = tolerancia;
+    capas.forEach(capa => (registro[capa] || []).forEach(reg => {
+        const d = map.latLngToContainerPoint(reg.latlng).distanceTo(p);
+        if (d < minimo) { minimo = d; mejor = reg; }
+    }));
+    return mejor;
+}
+
+// Código sugerido: sector de la cámara más cercana y el siguiente número libre;
+// los sumideros toman el código de la cámara más cercana (a menos de 80 m).
+function codigoSugerido(capa, latlng) {
+    let cercana = null, minimo = Infinity;
+    (registro.camaras || []).forEach(reg => {
+        const d = map.distance(latlng, reg.latlng);
+        if (d < minimo) { minimo = d; cercana = reg; }
+    });
+    const siguiente = (lista, prefijo, desde, ancho) => String(Math.max(0, ...lista
+        .filter(r => r.props.codigo.startsWith(prefijo))
+        .map(r => Number(r.props.codigo.slice(desde)) || 0)) + 1).padStart(ancho, '0');
+    if (capa === 'camaras') {
+        const sector = cercana?.props.sector || 'A';
+        return `PCC${sector}${siguiente(registro.camaras, `PCC${sector}`, 4, 3)}`;
+    }
+    if (!cercana || minimo > 80) return '';
+    const base = cercana.props.codigo;
+    return `${base}SM${siguiente(registro.sumideros, `${base}SM`, base.length + 2, 2)}`;
+}
+
+// ---- Formulario ----------------------------------------------------------
+function valorActual(reg, columna) {
+    return columna.startsWith('cod_') ? reg.props.codigo : reg.props[columna];
+}
+
+function hoy() {
+    return new Date().toLocaleDateString('en-CA', { timeZone: 'America/La_Paz' });  // AAAA-MM-DD
+}
+
+function htmlCampo([col, rotulo, tipo], valor, accion) {
+    const id = `ed-${col}`;
+    const v = valor ?? '';
+    let control;
+    if (tipo === 'codigo') {
+        control = accion === 'agregar'
+            ? `<input class="campo mono" id="${id}" name="${col}" value="${esc(v)}" autocomplete="off" spellcheck="false" autocapitalize="characters">`
+            : `<input class="campo mono" id="${id}" value="${esc(v)}" readonly>`;
+    } else if (tipo.startsWith('lista:')) {
+        let valores = dominios?.[tipo.slice(6)] || [];
+        if (v !== '' && !valores.includes(v)) valores = [v, ...valores];  // valor antiguo fuera de la lista
+        control = `<select class="campo" id="${id}" name="${col}"><option value="">Sin dato</option>
+            ${valores.map(x => `<option value="${esc(x)}"${x === v ? ' selected' : ''}>${esc(etiqueta(x))}</option>`).join('')}</select>`;
+    } else if (tipo === 'sino') {
+        control = `<select class="campo" id="${id}" name="${col}"><option value="">Sin dato</option>
+            <option value="true"${v === true ? ' selected' : ''}>Sí</option><option value="false"${v === false ? ' selected' : ''}>No</option></select>`;
+    } else if (tipo === 'fecha') {
+        control = `<input class="campo" type="date" id="${id}" name="${col}" value="${esc(v)}">`;
+    } else if (tipo === 'texto') {
+        control = `<textarea class="campo" id="${id}" name="${col}" rows="2">${esc(v)}</textarea>`;
+    } else {
+        control = `<input class="campo" id="${id}" name="${col}" inputmode="${tipo === 'entero' ? 'numeric' : 'decimal'}" autocomplete="off"
+            value="${esc(v === '' ? '' : String(v).replace('.', ','))}">`;
+    }
+    return `<div class="campo-form${tipo === 'texto' ? ' campo-form--ancho' : ''}"><label class="etiqueta" for="${id}">${esc(rotulo)}</label>${control}</div>`;
+}
+
+function abrirFormulario(op) {
+    if (!puedeEditar) return;
+    formularioActual = op;
+    const { capa, accion, reg } = op;
+    const nombre = NOMBRE_ELEMENTO[capa];
+    map.closePopup();
+    document.getElementById('tituloEdicion').textContent = accion === 'agregar'
+        ? `Agregar ${nombre}` : `Editar ${nombre} ${reg.props.codigo}`;
+    document.getElementById('subtituloEdicion').textContent = accion === 'modificar'
+        ? 'El sector, la certeza, las elevaciones y la pendiente los calcula la base al guardar.'
+        : op.origen ? `De ${op.origen.props.codigo} a ${op.destino.props.codigo}. El código, la longitud y la pendiente se calculan al guardar.`
+        : 'Ubicación marcada en el mapa. La elevación se interpola de los elementos vecinos.';
+    const sugerido = accion === 'agregar' && op.latlng ? codigoSugerido(capa, op.latlng) : '';
+    document.getElementById('camposEdicion').innerHTML = CAMPOS_EDICION[capa].map(c => htmlCampo(c,
+        accion === 'modificar' ? valorActual(reg, c[0]) : c[2] === 'codigo' ? sugerido : c[2] === 'fecha' ? hoy() : null,
+        accion)).join('');
+    document.getElementById('edicionMensaje').textContent = '';
+
+    if (vistaPrevia) map.removeLayer(vistaPrevia);
+    vistaPrevia = null;
+    if (op.geometria) {
+        const puntos = op.geometria.type === 'Point' ? [op.geometria.coordinates] : op.geometria.coordinates;
+        const ll = puntos.map(([lon, lat]) => L.latLng(lat, lon));
+        vistaPrevia = (ll.length === 1
+            ? L.circleMarker(ll[0], { radius: 9, color: '#ffffff', weight: 3, fillColor: '#a8423a', fillOpacity: 1, interactive: false, pane: 'pEtiquetas' })
+            : L.polyline(ll, { color: '#a8423a', weight: 5, interactive: false, pane: 'pEtiquetas' })).addTo(map);
+    }
+    document.getElementById('dialogoEdicion').showModal();
+    document.querySelector('#camposEdicion .campo:not([readonly])')?.focus();
+}
+
+function iguales(a, b) {
+    if (a === null || a === undefined || a === '') return b === null;
+    if (typeof a === 'number') return Number(b) === a;
+    return String(a) === String(b);
+}
+
+function leerFormulario() {
+    const { capa, accion, reg } = formularioActual;
+    const datos = {};
+    for (const [col, rotulo, tipo] of CAMPOS_EDICION[capa]) {
+        const el = document.getElementById(`ed-${col}`);
+        if (!el?.name) continue;  // código de solo lectura
+        const texto = el.value.trim();
+        let v = texto === '' ? null : texto;
+        if (v !== null && (tipo === 'numero' || tipo === 'entero')) {
+            v = Number(texto.replace(',', '.'));
+            if (!Number.isFinite(v) || v < 0 || (tipo === 'entero' && !Number.isInteger(v))) {
+                throw new Error(`${rotulo}: escriba un número ${tipo === 'entero' ? 'entero ' : ''}válido (por ejemplo 1,25).`);
+            }
+        }
+        if (v !== null && tipo === 'sino') v = texto === 'true';
+        if (v !== null && tipo === 'codigo') v = texto.toUpperCase();
+        if (tipo === 'codigo' && v === null) throw new Error('Escriba el código del elemento.');
+        if (accion === 'agregar' ? v !== null : !iguales(valorActual(reg, col), v)) datos[col] = v;
+    }
+    return datos;
+}
+
+async function editarEnBase(capa, accion, codigo, atributos = {}, geometria = null) {
+    const cliente = await clienteSupabase();
+    const { data, error } = await cliente.rpc('geoportal_editar', {
+        p_capa: TABLA_EDICION[capa], p_accion: accion, p_codigo: codigo || null,
+        p_atributos: atributos, p_geometria: geometria, p_desde: versionActual || null
+    });
+    if (error) {
+        throw new Error(error.code === '42501' || /permission denied|JWT/i.test(error.message)
+            ? 'Su sesión no tiene permiso para editar o venció. Vuelva a iniciar sesión.' : error.message);
+    }
+    return data;
+}
+
+async function guardarFormulario(e) {
+    e.preventDefault();
+    const op = formularioActual;
+    const mensaje = document.getElementById('edicionMensaje');
+    const boton = document.getElementById('edicionGuardar');
+    let atributos;
+    try {
+        atributos = leerFormulario();
+    } catch (error) {
+        mensaje.textContent = error.message;
+        return;
+    }
+    if (op.accion === 'modificar' && !Object.keys(atributos).length) {
+        mensaje.textContent = 'No hay cambios para guardar.';
+        return;
+    }
+    boton.disabled = true;
+    boton.textContent = 'Guardando…';
+    mensaje.textContent = '';
+    try {
+        const r = await editarEnBase(op.capa, op.accion, op.reg?.props.codigo, atributos, op.geometria || null);
+        document.getElementById('dialogoEdicion').close();
+        const nombre = NOMBRE_ELEMENTO[op.capa];
+        await mostrarResultado(op.capa, r.codigo, r, op.accion === 'agregar'
+            ? `Se agregó ${nombre} ${r.codigo}.` : `Se guardaron los cambios de ${r.codigo}.`);
+    } catch (error) {
+        mensaje.textContent = error.message;
+    } finally {
+        boton.disabled = false;
+        boton.textContent = 'Guardar';
+    }
+}
+
+async function eliminarElemento(reg) {
+    const nombre = NOMBRE_ELEMENTO[reg.capa];
+    if (!confirm(`¿Eliminar ${nombre} ${reg.props.codigo}?\n\nEl cambio queda registrado en el historial de ediciones.`)) return;
+    try {
+        const r = await editarEnBase(reg.capa, 'eliminar', reg.props.codigo);
+        map.closePopup();
+        await mostrarResultado(reg.capa, null, r, `Se eliminó ${nombre} ${r.codigo}.`);
+    } catch (error) {
+        aviso(error.message, 'error');
+    }
+}
+
+// Aplica los cambios que trae la respuesta (o los pide) y abre la ficha del elemento
+async function mostrarResultado(capa, codigo, r, mensaje) {
+    if (r.cambios && datosActuales && tiempoDe(versionActual) < tiempoDe(r.version)) {
+        redibujar(combinarCambios(datosActuales, r.cambios));
+        versionActual = versionDe(datosActuales);
+        fuenteDatos = 'supabase';
+        construirResumen();
+    }
+    for (let i = 0; i < 15 && tiempoDe(versionActual) < tiempoDe(r.version); i++) {
+        if (actualizando) await esperar(400);
+        else await actualizarDatos(mensaje);
+    }
+    aviso(mensaje);
+    const reg = codigo && (registro[capa] || []).find(r => r.props.codigo === codigo);
+    if (reg) irA(reg);
+}
 
 // =====================================================================
 // Ficha técnica en PDF

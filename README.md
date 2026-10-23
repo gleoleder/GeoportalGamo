@@ -24,13 +24,14 @@ GeoJSON (EPSG:4326) las capas `camaras`, `sumideros`, `tuberias_camaras`,
 proceso.
 
 Para que la página cargue rápido, primero se dibuja `datos.geojson` (GitHub
-Pages lo sirve comprimido desde un nodo cercano) y en paralelo se consulta
-Supabase; si la versión de la base es otra, el mapa se actualiza solo.
+Pages lo sirve comprimido desde un nodo cercano) y después se pide a Supabase
+solo lo que cambió desde esa copia (`geoportal_cambios`, unos pocos KB).
 
 **Tiempo real**: cada edición guardada desde QGIS cambia
 `public.geoportal_estado.version`. El geoportal escucha ese cambio con
 Supabase Realtime (supabase-js se descarga después de dibujar el mapa), vuelve
-a leer los datos y mantiene abierta la ficha que se estaba consultando. Si el
+a pedir solo los elementos que cambiaron y mantiene abierta la ficha que se
+estaba consultando. Si el
 canal en tiempo real no está disponible, consulta la versión cada minuto. El
 indicador de la barra superior late cuando la conexión en tiempo real está
 activa.
@@ -47,8 +48,15 @@ git push
 anterior (lectura directa de GeoPackage) y ya no generan el formato que usa
 la aplicación.
 
-La clave anon de `config.js` es pública por diseño: solo permite ejecutar la
-función de lectura y leer la versión de los datos. Nunca poner aquí la contraseña de la base ni la clave
+**Edición en la web**: con *Iniciar sesión*, los usuarios autorizados agregan
+cámaras, sumideros y tuberías (barra *Agregar* del mapa) y editan o eliminan
+elementos desde su ficha. La función `geoportal_editar` de la base verifica el
+usuario y valida cada cambio igual que en QGIS; la respuesta trae los
+elementos afectados, que se dibujan al instante. Los usuarios se administran
+con `usuarios_web.py` del proyecto PostGIS.
+
+La clave anon de `config.js` es pública por diseño: permite leer los datos e
+iniciar sesión, pero editar exige un usuario autorizado. Nunca poner aquí la contraseña de la base ni la clave
 service_role.
 
 ## Cómo usar en local

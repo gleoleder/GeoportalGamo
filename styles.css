@@ -136,6 +136,26 @@ button, input, select { font: inherit; color: inherit; }
     to { box-shadow: 0 0 0 7px rgba(79, 174, 132, 0); }
 }
 
+.barra__sesion {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 34px;
+    padding: 0 12px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    border-radius: var(--radio-chico);
+    background: transparent;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 160ms ease, border-color 160ms ease;
+}
+.barra__sesion:hover { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.4); }
+.barra__sesion svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; }
+.barra__sesion.activa { border-color: #4fae84; }
+
 /* ---------------------------------------------------------------------
    Estructura
    --------------------------------------------------------------------- */
@@ -732,10 +752,10 @@ select.campo { margin-bottom: 14px; }
 .ficha__datos dd { color: var(--tinta); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .ficha__datos dd .estado {
     display: inline-flex;
-    align-items: center;
+    align-items: flex-start;  /* el cuadro de color queda en la primera línea si el texto ocupa varias */
     gap: 6px;
 }
-.ficha__datos dd .estado i { width: 8px; height: 8px; border-radius: 2px; }
+.ficha__datos dd .estado i { flex: none; width: 8px; height: 8px; margin-top: 0.45em; border-radius: 2px; }
 .ficha__datos dd .mono { font-family: var(--mono); font-size: 12.5px; }
 .ficha__texto { margin: 0 0 10px; font-size: 13px; line-height: 1.5; color: var(--tinta-2); }
 
@@ -748,6 +768,96 @@ select.campo { margin-bottom: 14px; }
     background: var(--fondo);
 }
 .ficha__pie .boton { padding: 6px 10px; font-size: 12.5px; }
+
+/* ---------------------------------------------------------------------
+   Edición: sesión, barra «Agregar» y formularios
+   --------------------------------------------------------------------- */
+.boton--peligro { color: var(--error); }
+.boton--peligro:hover { border-color: var(--error); }
+.boton:disabled { opacity: 0.6; cursor: progress; }
+
+.dialogo {
+    width: min(400px, calc(100vw - 24px));
+    padding: 0;
+    border: 0;
+    border-radius: var(--radio);
+    box-shadow: var(--sombra);
+    color: var(--tinta);
+    background: var(--superficie);
+}
+.dialogo::backdrop { background: rgba(19, 40, 59, 0.45); }
+.dialogo form { padding: 20px 22px 18px; }
+.dialogo h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+.dialogo .campo { margin-bottom: 12px; }
+.dialogo .mensaje { margin: 0; }
+.dialogo__acciones { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+.dialogo--formulario { width: min(640px, calc(100vw - 24px)); }
+.dialogo--formulario form { display: flex; flex-direction: column; max-height: min(86vh, 760px); padding: 0; }
+.dialogo__cabeza { padding: 16px 22px 12px; border-bottom: 1px solid var(--borde); }
+.dialogo__cabeza p { margin: 2px 0 0; font-size: 13px; line-height: 1.45; color: var(--tinta-3); }
+.dialogo__cuerpo {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 14px;
+    padding: 14px 22px 2px;
+    overflow-y: auto;
+}
+.campo-form--ancho { grid-column: 1 / -1; }
+.campo-form .campo, .campo-form select.campo { margin-bottom: 12px; }
+textarea.campo { min-height: 58px; resize: vertical; }
+.campo.mono { font-family: var(--mono); letter-spacing: 0.02em; }
+.campo[readonly] { background: var(--fondo); color: var(--tinta-2); }
+.dialogo--formulario .mensaje { padding: 0 22px; }
+.dialogo--formulario .dialogo__acciones { margin: 0; padding: 12px 22px 16px; border-top: 1px solid var(--borde); }
+
+.edicion {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    max-width: min(600px, calc(100vw - 110px));
+    padding: 6px;
+    border-radius: var(--radio);
+    background: var(--superficie);
+    box-shadow: var(--sombra);
+    font-family: var(--fuente);
+}
+.edicion__titulo {
+    padding: 0 6px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--tinta-3);
+}
+.edicion button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 9px;
+    border: 1px solid var(--borde);
+    border-radius: var(--radio-chico);
+    background: var(--superficie);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: border-color 160ms ease, background-color 160ms ease;
+}
+.edicion button:hover { border-color: var(--tinta-3); }
+.edicion button[aria-pressed="true"] { background: var(--acento-suave); border-color: var(--acento); }
+.edicion button svg { flex: none; }
+.edicion__guia {
+    flex-basis: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 4px 2px 6px;
+    font-size: 13px;
+    color: var(--tinta-2);
+}
+.edicion__guia span { flex: 1; }
+.leaflet-container.seleccionando,
+.leaflet-container.seleccionando .leaflet-interactive { cursor: crosshair; }
 
 /* ---------------------------------------------------------------------
    Avisos y carga
@@ -804,6 +914,10 @@ select.campo { margin-bottom: 14px; }
     .barra { padding-right: 12px; gap: 8px; }
     .barra__titulo h1 { font-size: 14.5px; }
     .barra__estado .texto { display: none; }
+    .barra__sesion { padding: 0 9px; }
+    .barra__sesion span { display: none; }
+    .dialogo__cuerpo { grid-template-columns: 1fr; }
+    .edicion button span { display: none; }
     .panel {
         position: absolute;
         inset: 0 auto 0 0;
