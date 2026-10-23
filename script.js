@@ -130,14 +130,16 @@ const TEMAS = {
 };
 
 const CAPAS = {
-    camaras: { nombre: 'Cámaras de inspección', grupo: 'Red de drenaje', tipo: 'punto', tema: 'accesibilidad', pane: 'pCamaras' },
-    sumideros: { nombre: 'Sumideros', grupo: 'Red de drenaje', tipo: 'punto', tema: 'condicion', pane: 'pSumideros' },
-    tuberias_camaras: { nombre: 'Tuberías de cámaras', grupo: 'Red de drenaje', tipo: 'linea', tema: 'unico', pane: 'pTuberias', color: '#24577a', zoomEtiquetas: 17 },
-    tuberias_sumideros: { nombre: 'Tuberías de sumideros', grupo: 'Red de drenaje', tipo: 'linea', tema: 'unico', pane: 'pTuberias', color: '#5c9bc8', zoomEtiquetas: 19 },
-    canales: { nombre: 'Ejes de canales', grupo: 'Canales', tipo: 'linea', pane: 'pCanales', color: '#127369' },
-    progresivas: { nombre: 'Secciones levantadas', grupo: 'Canales', tipo: 'punto', tema: 'estado_estructural', pane: 'pProgresivas', zoomMin: 16 },
+    camaras: { nombre: 'Cámaras de inspección', grupo: 'Red de drenaje', tipo: 'punto', tema: 'accesibilidad', pane: 'pVector' },
+    sumideros: { nombre: 'Sumideros', grupo: 'Red de drenaje', tipo: 'punto', tema: 'condicion', pane: 'pVector' },
+    tuberias_camaras: { nombre: 'Tuberías de cámaras', grupo: 'Red de drenaje', tipo: 'linea', tema: 'unico', pane: 'pVector', color: '#24577a', zoomEtiquetas: 17 },
+    tuberias_sumideros: { nombre: 'Tuberías de sumideros', grupo: 'Red de drenaje', tipo: 'linea', tema: 'unico', pane: 'pVector', color: '#5c9bc8', zoomEtiquetas: 19 },
+    canales: { nombre: 'Ejes de canales', grupo: 'Canales', tipo: 'linea', pane: 'pVector', color: '#127369' },
+    progresivas: { nombre: 'Secciones levantadas', grupo: 'Canales', tipo: 'punto', tema: 'estado_estructural', pane: 'pVector', zoomMin: 16 },
     area: { nombre: 'Área de estudio', grupo: 'Referencia', tipo: 'poligono', pane: 'pArea', color: '#13283b' }
 };
+// Orden de dibujo en el lienzo común: lo último queda arriba y recibe el clic
+const ORDEN_DIBUJO = ['area', 'canales', 'tuberias_sumideros', 'tuberias_camaras', 'progresivas', 'sumideros', 'camaras'];
 const ORDEN_PANEL = ['camaras', 'sumideros', 'tuberias_camaras', 'tuberias_sumideros', 'canales', 'progresivas', 'area'];
 
 // Registro de entidades por capa: { props, capa, layer, latlng }
@@ -463,24 +465,19 @@ let claveBase = 'gris';
 function initMap() {
     map = L.map('map', { maxZoom: 22, zoomSnap: 0.25, zoomControl: false }).setView([-17.9647, -67.1064], 15);
 
-    // Orden de dibujo: área, canales, tuberías, flujo, secciones, sumideros, cámaras
-    [['pArea', 380], ['pCanales', 400], ['pTuberias', 410], ['pFlujo', 415], ['pEtiquetas', 612],
-     ['pProgresivas', 620], ['pSumideros', 630], ['pCamaras', 640]].forEach(([n, z]) => {
+    // Capas: área, elementos de la red (un solo lienzo), flujo animado y etiquetas
+    [['pArea', 380], ['pVector', 410], ['pFlujo', 415], ['pEtiquetas', 612]].forEach(([n, z]) => {
         map.createPane(n).style.zIndex = z;
     });
     map.getPane('pFlujo').style.pointerEvents = 'none';
     map.getPane('pEtiquetas').style.pointerEvents = 'none';
 
-    // Todo se dibuja en canvas: líneas, polígonos y puntos (más liviano que
-    // miles de elementos SVG o marcadores); la animación del flujo tiene su
-    // propio lienzo (CapaFlujo).
+    // Todo se dibuja en canvas (más liviano que miles de elementos SVG o
+    // marcadores). Canales, tuberías y puntos comparten un lienzo: con varios
+    // lienzos superpuestos, el de arriba se quedaría con todos los clics.
     lienzos = {
         pArea: L.canvas({ pane: 'pArea' }),
-        pCanales: L.canvas({ pane: 'pCanales', tolerance: 4 }),
-        pTuberias: L.canvas({ pane: 'pTuberias', tolerance: 6 }),
-        pProgresivas: L.canvas({ pane: 'pProgresivas', tolerance: 3 }),
-        pSumideros: L.canvas({ pane: 'pSumideros', tolerance: 3 }),
-        pCamaras: L.canvas({ pane: 'pCamaras', tolerance: 3 })
+        pVector: L.canvas({ pane: 'pVector', tolerance: 5 })
     };
 
     L.control.zoom({ position: 'topright', zoomInTitle: 'Acercar', zoomOutTitle: 'Alejar' }).addTo(map);
@@ -546,13 +543,23 @@ function agregarControles() {
     new Coordenadas().addTo(map);
 }
 
+// Una capa que se vuelve a mostrar queda al final del lienzo: se restablece el orden
+function ordenarCapas() {
+    ORDEN_DIBUJO.forEach(capa => {
+        if (capa !== 'area' && grupos[capa] && map.hasLayer(grupos[capa])) grupos[capa].bringToFront();
+    });
+}
+
 function actualizarZoom() {
     const z = map.getZoom();
     actualizarEtiquetas();
     // Las secciones de canal solo se muestran de cerca
     if (grupos.progresivas) {
         const debe = visibles.progresivas && z >= CAPAS.progresivas.zoomMin;
-        if (debe && !map.hasLayer(grupos.progresivas)) grupos.progresivas.addTo(map);
+        if (debe && !map.hasLayer(grupos.progresivas)) {
+            grupos.progresivas.addTo(map);
+            ordenarCapas();
+        }
         if (!debe && map.hasLayer(grupos.progresivas)) map.removeLayer(grupos.progresivas);
     }
 }
@@ -823,7 +830,7 @@ function mostrarDatos(geojson) {
         const capa = f.properties?._capa;
         if (CAPAS[capa] && f.geometry) registro[capa].push({ capa, props: f.properties, geometry: f.geometry });
     });
-    ORDEN_PANEL.forEach(construirCapa);
+    ORDEN_DIBUJO.forEach(construirCapa);
     construirPanelCapas();
     construirResumen();
     actualizarZoom();
@@ -1203,6 +1210,7 @@ function alternarCapa(capa, activa) {
         if (activa && map.getZoom() < CAPAS.progresivas.zoomMin) aviso('Las secciones de canal se muestran desde el zoom 16.');
     } else if (activa) {
         grupos[capa].addTo(map);
+        ordenarCapas();
     } else {
         map.removeLayer(grupos[capa]);
     }
@@ -1297,6 +1305,20 @@ const CapaFlujo = L.Layer.extend({
         ctx.setLineDash([2, 14]);
         ctx.lineDashOffset = -((t % 1100) / 1100) * 16;  // avanza de origen a destino
         ctx.stroke();
+        // Los símbolos de cámaras y sumideros quedan por encima de los trazos
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.beginPath();
+        ['camaras', 'sumideros'].forEach(capa => {
+            if (!grupos[capa] || !map.hasLayer(grupos[capa])) return;
+            for (const reg of registro[capa]) {
+                const { _point: pt, _radius: r } = reg.layer;
+                if (!pt || !vista.contains(pt)) continue;
+                ctx.moveTo(pt.x + r, pt.y);
+                ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+            }
+        });
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
     }
 });
 
