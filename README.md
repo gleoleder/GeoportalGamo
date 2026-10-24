@@ -100,6 +100,10 @@ No abrir `index.html` con doble clic: `fetch()` no funciona sobre `file://`.
 - Fichas emergentes con todos los atributos depurados, la fotografía de campo
   y las conexiones de cada elemento; las tuberías incluyen un perfil
   longitudinal (terreno, cámaras y fondo de la tubería) y sus cotas.
+- Corte (perfil vertical) de cada cámara y sumidero en su ficha, a escala
+  real con las medidas del relevamiento: profundidad de la solera, tuberías
+  de entrada y salida, tapa, cono, escalones, rejilla (con su planta) y
+  sedimento. Lo no medido se dibuja con línea discontinua y se indica.
 - En el celular la ficha se abre en una hoja que sube desde abajo (todo el
   ancho, letra y botones grandes): el elemento queda a la vista y marcado
   encima; se agranda arrastrándola hacia arriba y se cierra hacia abajo, con

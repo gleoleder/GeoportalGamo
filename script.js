@@ -1457,6 +1457,7 @@ const FICHAS = {
                 ['elevacion_fuente', 'Fuente de la elevación', 'texto']]]
         ],
         foto: p => p.foto_url || p.foto_descarga_url,
+        corte: reg => htmlCorte(svgCorteCamara(reg), 'Corte de la cámara de inspección'),
         texto: [['observaciones', 'Observaciones de campo']]
     },
     sumideros: {
@@ -1494,6 +1495,7 @@ const FICHAS = {
                 ['elevacion_fuente', 'Fuente de la elevación', 'texto']]]
         ],
         foto: p => p.foto_url || p.foto_descarga_url,
+        corte: reg => htmlCorte(svgCorteSumidero(reg), 'Corte del sumidero'),
         texto: [['justificacion', 'Motivo (apertura)'], ['observaciones', 'Observaciones de campo']]
     },
     tuberias_camaras: {
@@ -1724,6 +1726,7 @@ function htmlFicha(reg) {
                         ${urls.length ? `<img src="${esc(urls[0])}" alt="Fotografía de campo de ${esc(p.codigo)}" loading="lazy" referrerpolicy="no-referrer" data-urls='${esc(JSON.stringify(urls))}' data-original="${esc(foto)}">` : ''}
                         <div class="sin-foto" ${urls.length ? 'hidden' : ''}>Sin fotografía registrada</div>
                     </div>` : ''}
+                ${def.corte ? def.corte(reg) : ''}
                 ${def.perfil ? htmlPerfil(p) : ''}
                 ${cuerpo}${textos}${nota}
             </div>
@@ -1775,6 +1778,190 @@ function svgPerfil(p, W = 320, H = 132) {
         <text x="6" y="${H - 8}" font-size="9" fill="#7a8897">${numero(largo, 1)} m · exageración vertical ×${numero(exageracion, exageracion < 10 ? 1 : 0)}</text>
         <text x="${W - 6}" y="${H - 8}" text-anchor="end" font-size="9" fill="#7a8897">${conFondo ? 'Terreno (MDS) y fondo de la tubería' : 'Solo terreno: sin profundidades'}</text>
     </svg>`;
+}
+
+// ---------------------------------------------------------------------
+// Cortes (perfil vertical) de cámaras y sumideros
+// ---------------------------------------------------------------------
+// Dibujos a escala real (la misma en vertical y en horizontal) con las
+// medidas del relevamiento: profundidad de la solera, tuberías de entrada y
+// salida, tapa, rejilla y sedimento. Lo que no se midió se dibuja con línea
+// discontinua y medida nominal, y se indica al pie.
+const COLOR_CORTE = { suelo: '#ece4d6', terreno: '#8a7a62', muro: '#cfc8bb', borde: '#22303d', tapa: '#4b5966', texto: '#16222e', suave: '#7a8897' };
+
+function medidaCorte(v) {
+    return v === null || v === undefined || v === '' || isNaN(v) ? null : Number(v);
+}
+
+// Cota vertical con flechas y su texto (girado) a un costado
+function cotaVertical(x, y1, y2, texto, lado = 'izq') {
+    [x, y1, y2] = [Number(x), Number(y1), Number(y2)];
+    const dx = lado === 'izq' ? -5 : 5;
+    const ym = (y1 + y2) / 2;
+    return `<g stroke="${COLOR_CORTE.suave}" stroke-width="0.9" fill="none">
+        <line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}"/>
+        <path d="M${x - 3} ${y1 + 5} L${x} ${y1} L${x + 3} ${y1 + 5}M${x - 3} ${y2 - 5} L${x} ${y2} L${x + 3} ${y2 - 5}"/></g>
+        <text x="${x + dx}" y="${ym}" font-size="9.5" fill="${COLOR_CORTE.texto}" text-anchor="middle"
+            transform="rotate(-90 ${x + dx} ${ym})" dy="${lado === 'izq' ? -1 : 9}" stroke="#ffffff" stroke-width="3" paint-order="stroke">${texto}</text>`;
+}
+
+function flecha(x, y, haciaDerecha = true, color = '#ffffff') {
+    const s = haciaDerecha ? 1 : -1;
+    return `<path d="M${x - 9 * s} ${y} L${x + 5 * s} ${y} M${x + 1 * s} ${y - 3.5} L${x + 6 * s} ${y} L${x + 1 * s} ${y + 3.5}"
+        stroke="${color}" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+}
+
+function marcoCorte(W, H, contenido, pie) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" font-family="IBM Plex Sans, Arial, sans-serif">
+        <rect width="${W}" height="${H}" fill="#f6f8fa"/>${contenido}
+        <text x="6" y="${H - 7}" font-size="9" fill="${COLOR_CORTE.suave}">${pie}</text></svg>`;
+}
+
+function svgCorteCamara(reg, W = 320, H = 230) {
+    const p = reg.props;
+    const solera = medidaCorte(p.altura_solera_m);
+    const ent = medidaCorte(p.prof_tub_entrada_m);
+    const sal = medidaCorte(p.prof_tub_salida_m);
+    const tapa = medidaCorte(p.diametro_tapa_m);
+    const altoTapa = medidaCorte(p.altura_tapa_m);
+    const entradas = (registro.tuberias_camaras || []).filter(t => t.props.destino === p.codigo);
+    const salida = (registro.tuberias_camaras || []).find(t => t.props.origen === p.codigo);
+    const pulg = v => (medidaCorte(v) ? medidaCorte(v) * 0.0254 : null);
+    const dEnt = Math.max(0, ...entradas.map(t => pulg(t.props.diametro_pulg) || 0)) || 0.2;
+    const dSal = pulg(salida?.props.diametro_pulg) || 0.2;
+    const medida = solera !== null;
+    const prof = solera ?? Math.max(ent ?? 0, sal ?? 0, 1.5);
+    const dTapa = tapa ?? 0.6;
+    const ancho = Math.max(1.0, dTapa + 0.5);  // ancho interior (no se midió): esquemático
+    const cono = p.tipo_ci === 'CONO' || !p.tipo_ci;
+    // Escala única para que el dibujo conserve las proporciones reales
+    const arriba = 34, abajo = 30;
+    const k = Math.min((H - arriba - abajo) / (prof + 0.14), (W - 150) / (ancho + 0.24));
+    const cx = W / 2, y0 = arriba, yF = y0 + prof * k, e = 0.12 * k;
+    const xI = cx - (ancho / 2) * k, xD = cx + (ancho / 2) * k;
+    const xTI = cx - (dTapa / 2) * k, xTD = cx + (dTapa / 2) * k;
+    const hCono = cono ? Math.min(0.6, prof * 0.4) * k : 0;
+    const f = n => n.toFixed(1);
+    const interior = cono
+        ? [[xTI, y0], [xTD, y0], [xD, y0 + hCono], [xD, yF], [xI, yF], [xI, y0 + hCono]]
+        : [[xTI, y0], [xTD, y0], [xTD, y0 + e], [xD, y0 + e], [xD, yF], [xI, yF], [xI, y0 + e], [xTI, y0 + e]];
+    const exterior = cono
+        ? [[xTI - e, y0], [xTD + e, y0], [xD + e, y0 + hCono], [xD + e, yF + e], [xI - e, yF + e], [xI - e, y0 + hCono]]
+        : [[xI - e, y0], [xD + e, y0], [xD + e, yF + e], [xI - e, yF + e]];
+    const puntos = pts => pts.map(([x, y]) => `${f(x)},${f(y)}`).join(' ');
+    const trazo = medida ? '' : ' stroke-dasharray="4 3"';
+    let rotuloSedimento = '';
+    let s = `<rect x="6" y="${y0}" width="${W - 12}" height="${f(Math.min(H - abajo + 4, yF + e + 10) - y0)}" fill="${COLOR_CORTE.suelo}"/>
+        <polygon points="${puntos(exterior)}" fill="${COLOR_CORTE.muro}" stroke="${COLOR_CORTE.borde}" stroke-width="1"${trazo}/>
+        <polygon points="${puntos(interior)}" fill="#ffffff" stroke="${COLOR_CORTE.borde}" stroke-width="1"${trazo}/>`;
+    // Sedimento en el fondo (la condición se observó; su altura no se midió)
+    if (['SEDIMENTADO', 'COLMATADO', 'OBSTRUIDO'].includes(p.condicion_interior)) {
+        const h = Math.max(5, { SEDIMENTADO: 0.08, COLMATADO: 0.2, OBSTRUIDO: 0.35 }[p.condicion_interior] * k);
+        s += `<rect x="${f(xI)}" y="${f(yF - h)}" width="${f(xD - xI)}" height="${f(h)}" fill="#c9a46b" opacity="0.85"/>`;
+        rotuloSedimento = `<text x="${cx}" y="${f(yF - h - 4)}" font-size="9" fill="#7a5a26" text-anchor="middle" stroke="#ffffff" stroke-width="3" paint-order="stroke">${esc(etiqueta(p.condicion_interior))}${p.sedimentos ? ` (${esc(String(p.sedimentos).toLowerCase())})` : ''}</text>`;
+    }
+    // Escalones en la pared izquierda
+    if (p.escalones === true) {
+        for (let y = y0 + hCono + 0.25 * k; y < yF - 0.25 * k; y += 0.3 * k) {
+            s += `<path d="M${f(xI)} ${f(y)} h${f(0.12 * k)} v${f(0.05 * k)}" stroke="${COLOR_CORTE.borde}" stroke-width="1.4" fill="none"/>`;
+        }
+    }
+    // Tuberías de entrada (izquierda) y de salida (derecha), con su profundidad
+    const tubo = (x1, x2, yInv, d, color, texto, derecha) => {
+        const h = Math.max(5, d * k);
+        return `<rect x="${f(x1)}" y="${f(yInv - h)}" width="${f(x2 - x1)}" height="${f(h)}" fill="${color}" stroke="${COLOR_CORTE.borde}" stroke-width="0.8"/>
+            ${flecha((x1 + x2) / 2, yInv - h / 2)}
+            <text x="${derecha ? x2 - 2 : x1 + 2}" y="${f(yInv - h - 4)}" font-size="9.5" fill="${COLOR_CORTE.texto}" text-anchor="${derecha ? 'end' : 'start'}">${texto}</text>`;
+    };
+    if (ent !== null) s += tubo(10, xI, y0 + ent * k, dEnt, '#5c9bc8', `Entrada ${numero(ent, 2)} m`, false);
+    if (sal !== null) s += tubo(xD, W - 10, y0 + sal * k, dSal, '#24577a', `Salida ${numero(sal, 2)} m`, true);
+    // Terreno y tapa
+    const hTapa = Math.max(3, (altoTapa ?? 0.03) * k);
+    s += `<path d="M6 ${y0} H${f(xTI - e)} M${f(xTD + e)} ${y0} H${W - 6}" stroke="${COLOR_CORTE.terreno}" stroke-width="2"/>
+        <rect x="${f(xTI - 2)}" y="${f(y0 - hTapa)}" width="${f(xTD - xTI + 4)}" height="${f(hTapa)}" fill="${COLOR_CORTE.tapa}"/>
+        <text x="${cx}" y="${f(y0 - hTapa - 5)}" font-size="9.5" fill="${COLOR_CORTE.texto}" text-anchor="middle">Tapa Ø ${tapa !== null ? `${numero(tapa, 2)} m` : 's/d'}</text>
+        <text x="8" y="${y0 - 6}" font-size="9" fill="${COLOR_CORTE.suave}">Terreno ${p.elevacion_mds_m != null ? numero(p.elevacion_mds_m, 2) : ''}</text>`;
+    // Profundidad total y cota de fondo
+    s += cotaVertical(xD - Math.min(16, (xD - xI) / 4), y0 + hCono * 0.2, yF, medida ? `Solera ${numero(solera, 2)} m` : 'Sin medida', 'izq');
+    if (medida && p.elevacion_mds_m != null) {
+        s += `<text x="${cx}" y="${f(yF + e + 11)}" font-size="9" fill="${COLOR_CORTE.suave}" text-anchor="middle">Fondo ${numero(p.elevacion_mds_m - solera, 2)}</text>`;
+    }
+    s += rotuloSedimento;
+    const pie = medida
+        ? `Corte a escala · ${p.tipo_ci ? String(p.tipo_ci).toLowerCase() : 'tipo no registrado'} · ancho interior esquemático`
+        : 'Sin profundidades medidas: esquema nominal';
+    return marcoCorte(W, H, s, esc(pie));
+}
+
+function svgCorteSumidero(reg, W = 320, H = 210) {
+    const p = reg.props;
+    const solera = medidaCorte(p.altura_solera_m);
+    const atipico = solera !== null && solera > 3;  // p. ej. 93 «m»: probable dato en cm
+    const anchoS = medidaCorte(p.ancho_m);
+    const largo = medidaCorte(p.largo_m);
+    const esp = medidaCorte(p.espesor_m);
+    const sed = medidaCorte(p.altura_sedimento_m);
+    const salida = (registro.tuberias_sumideros || []).find(t => t.props.origen === p.codigo);
+    const profSal = medidaCorte(salida?.props.profundidad_m) ?? medidaCorte(salida?.props.prof_inicio_m);
+    const dSal = (medidaCorte(salida?.props.diametro_pulg) || 6) * 0.0254;
+    const medida = solera !== null && !atipico;
+    const prof = medida ? solera : 0.9;
+    const a = anchoS ?? 0.5;
+    const sinRejilla = p.tipo_rejilla === 'SIN REJILLA';
+    // Corte (izquierda, 205 px) y planta de la rejilla (derecha)
+    const arriba = 32, abajo = 30, anchoCorte = 205;
+    const k = Math.min((H - arriba - abajo) / (prof + 0.12), (anchoCorte - 90) / (a + 0.2));
+    const cx = 72 + (a / 2) * k, y0 = arriba, yF = y0 + prof * k, e = 0.1 * k;
+    const xI = cx - (a / 2) * k, xD = cx + (a / 2) * k;
+    const hR = Math.max(3, (esp ?? 0.05) * k);
+    const f = n => n.toFixed(1);
+    const trazo = medida ? '' : ' stroke-dasharray="4 3"';
+    let s = `<rect x="6" y="${y0}" width="${anchoCorte - 6}" height="${f(Math.min(H - abajo + 4, yF + e + 10) - y0)}" fill="${COLOR_CORTE.suelo}"/>
+        <rect x="${f(xI - e)}" y="${y0}" width="${f(xD - xI + 2 * e)}" height="${f(yF + e - y0)}" fill="${COLOR_CORTE.muro}" stroke="${COLOR_CORTE.borde}" stroke-width="1"${trazo}/>
+        <rect x="${f(xI)}" y="${f(y0)}" width="${f(xD - xI)}" height="${f(yF - y0)}" fill="#ffffff" stroke="${COLOR_CORTE.borde}" stroke-width="1"${trazo}/>`;
+    // Sedimento a escala (altura medida en campo)
+    if (sed !== null && sed > 0) {
+        const h = Math.min(sed * k, yF - y0 - hR);
+        s += `<rect x="${f(xI)}" y="${f(yF - h)}" width="${f(xD - xI)}" height="${f(h)}" fill="#c9a46b" opacity="0.85"/>`;
+        s += cotaVertical(xD - 9, yF - h, yF, `${numero(sed, 2)} m`, 'izq');  // dentro de la caja
+    }
+    // Tubería de salida hacia la cámara o el canal
+    if (profSal !== null && profSal <= prof + 0.3) {
+        const yInv = y0 + profSal * k, h = Math.max(5, dSal * k);
+        s += `<rect x="${f(xD)}" y="${f(yInv - h)}" width="${f(anchoCorte - 4 - xD)}" height="${f(h)}" fill="#5c9bc8" stroke="${COLOR_CORTE.borde}" stroke-width="0.8"/>
+            ${flecha((xD + anchoCorte - 4) / 2, yInv - h / 2)}
+            <text x="${anchoCorte - 6}" y="${f(yInv - h - 4 < y0 + 12 ? yInv + 12 : yInv - h - 4)}" font-size="9.5" fill="${COLOR_CORTE.texto}" text-anchor="end">→ ${esc(conCanales(salida.props.destino) || '')}</text>`;
+    }
+    // Terreno y rejilla
+    s += `<path d="M6 ${y0} H${f(xI - e)} M${f(xD + e)} ${y0} H${anchoCorte}" stroke="${COLOR_CORTE.terreno}" stroke-width="2"/>`;
+    if (!sinRejilla) {
+        s += `<rect x="${f(xI - 2)}" y="${f(y0 - hR / 2)}" width="${f(xD - xI + 4)}" height="${f(hR)}" fill="${COLOR_CORTE.tapa}"/>`;
+    }
+    s += `<text x="8" y="${y0 - 8}" font-size="9" fill="${COLOR_CORTE.suave}">Terreno ${p.elevacion_mds_m != null ? numero(p.elevacion_mds_m, 2) : ''}</text>`;
+    s += cotaVertical(xI - e - 12, y0, yF, medida ? `Solera ${numero(solera, 2)} m` : 'Sin medida', 'izq');
+    s += `<text x="${f(cx)}" y="${f(yF + e + 11)}" font-size="9" fill="${COLOR_CORTE.suave}" text-anchor="middle">Ancho ${anchoS !== null ? `${numero(anchoS, 2)} m` : 's/d'}</text>`;
+    // Planta de la rejilla (largo × ancho, a su propia escala)
+    const px0 = anchoCorte + 14, pW = W - px0 - 10, pH = 70;
+    if (largo !== null && anchoS !== null && largo > 0 && anchoS > 0) {
+        const kp = Math.min(pW / largo, pH / anchoS);
+        const w = largo * kp, h = anchoS * kp, x = px0 + (pW - w) / 2, y = 52 + (pH - h) / 2;
+        s += `<text x="${px0 + pW / 2}" y="40" font-size="9.5" fill="${COLOR_CORTE.texto}" text-anchor="middle" font-weight="600">Planta</text>
+            <rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" fill="${sinRejilla ? '#ffffff' : '#e3e6ea'}" stroke="${COLOR_CORTE.borde}" stroke-width="1.2"/>`;
+        if (!sinRejilla) {
+            const barras = Math.max(3, Math.round(largo / 0.22));
+            for (let i = 1; i < barras; i++) s += `<line x1="${f(x + (w * i) / barras)}" y1="${f(y + 2)}" x2="${f(x + (w * i) / barras)}" y2="${f(y + h - 2)}" stroke="${COLOR_CORTE.tapa}" stroke-width="1.6"/>`;
+        }
+        s += `<text x="${f(x + w / 2)}" y="${f(y + h + 12)}" font-size="9.5" fill="${COLOR_CORTE.texto}" text-anchor="middle">${numero(largo, 2)} × ${numero(anchoS, 2)} m</text>
+            <text x="${px0 + pW / 2}" y="${f(y + h + 26)}" font-size="9" fill="${COLOR_CORTE.suave}" text-anchor="middle">${esc(etiqueta(p.tipo_rejilla) || '')}</text>`;
+        if (esp !== null) s += `<text x="${px0 + pW / 2}" y="${f(y + h + 38)}" font-size="9" fill="${COLOR_CORTE.suave}" text-anchor="middle">espesor ${numero(esp, 2)} m</text>`;
+    }
+    const pie = atipico ? `Altura de solera registrada: ${numero(solera, 2)} m (dato atípico): esquema nominal`
+        : medida ? `Corte a escala${sed ? ' · sedimento medido' : ''}` : 'Sin altura de solera medida: esquema nominal';
+    return marcoCorte(W, H, s, esc(pie));
+}
+
+function htmlCorte(svg, titulo) {
+    return svg ? `<figure class="ficha__perfil" aria-label="${esc(titulo)}">${svg}</figure>` : '';
 }
 
 function htmlPerfil(p) {
